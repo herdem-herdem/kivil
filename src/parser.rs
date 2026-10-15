@@ -3,12 +3,19 @@ use crate::lexer::Token;
 #[derive(Debug, PartialEq)]
 pub enum Expr {
     Number(f64),
+    Variable(String),
     Negate(Box<Expr>),
     Binary {
         left: Box<Expr>,
         operator: Operator,
         right: Box<Expr>,
     },
+}
+
+#[derive(Debug, PartialEq)]
+pub enum Statement {
+    Assignment { name: String, value: Expr },
+    Expression(Expr),
 }
 
 #[derive(Debug, PartialEq)]
@@ -19,9 +26,9 @@ pub enum Operator {
     Divide,
 }
 
-pub fn parse(tokens: &[Token]) -> Result<Vec<Expr>, String> {
+pub fn parse(tokens: &[Token]) -> Result<Vec<Statement>, String> {
     let mut parser = Parser { tokens, current: 0 };
-    let mut expressions = Vec::new();
+    let mut statements = Vec::new();
 
     while parser.peek().is_some() {
         if parser.peek() == Some(&Token::Newline) {
@@ -29,7 +36,7 @@ pub fn parse(tokens: &[Token]) -> Result<Vec<Expr>, String> {
             continue;
         }
 
-        expressions.push(parser.expression()?);
+        statements.push(parser.statement()?);
 
         if let Some(token) = parser.peek()
             && *token != Token::Newline
@@ -38,7 +45,7 @@ pub fn parse(tokens: &[Token]) -> Result<Vec<Expr>, String> {
         }
     }
 
-    Ok(expressions)
+    Ok(statements)
 }
 
 struct Parser<'a> {
@@ -49,6 +56,19 @@ struct Parser<'a> {
 impl Parser<'_> {
     fn peek(&self) -> Option<&Token> {
         self.tokens.get(self.current)
+    }
+
+    fn statement(&mut self) -> Result<Statement, String> {
+        if let Some(Token::Identifier(name)) = self.peek()
+            && self.tokens.get(self.current + 1) == Some(&Token::Equal)
+        {
+            let name = name.clone();
+            self.current += 2;
+            let value = self.expression()?;
+            return Ok(Statement::Assignment { name, value });
+        }
+
+        Ok(Statement::Expression(self.expression()?))
     }
 
     fn expression(&mut self) -> Result<Expr, String> {
@@ -111,6 +131,11 @@ impl Parser<'_> {
 
     fn primary(&mut self) -> Result<Expr, String> {
         match self.peek() {
+            Some(Token::Identifier(name)) => {
+                let name = name.clone();
+                self.current += 1;
+                Ok(Expr::Variable(name))
+            }
             Some(Token::Integer(value)) => {
                 let value = *value as f64;
                 self.current += 1;
@@ -132,22 +157,24 @@ impl Parser<'_> {
 
                 Ok(expression)
             }
-            Some(token) => Err(format!("Sayı veya '(' bekleniyordu, bulunan: {token:?}")),
-            None => Err("İfade tamamlanmamış; sayı veya '(' bekleniyor.".into()),
+            Some(token) => Err(format!(
+                "Sayı, değişken adı veya '(' bekleniyordu, bulunan: {token:?}"
+            )),
+            None => Err("İfade tamamlanmamış; sayı, değişken adı veya '(' bekleniyor.".into()),
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Expr, Operator, parse};
+    use super::{Expr, Operator, Statement, parse};
     use crate::lexer::tokenize;
 
     #[test]
     fn multiplication_binds_more_tightly_than_addition() {
         assert_eq!(
             parse(&tokenize("10 + 20 * 3").unwrap()),
-            Ok(vec![Expr::Binary {
+            Ok(vec![Statement::Expression(Expr::Binary {
                 left: Box::new(Expr::Number(10.0)),
                 operator: Operator::Add,
                 right: Box::new(Expr::Binary {
@@ -155,7 +182,7 @@ mod tests {
                     operator: Operator::Multiply,
                     right: Box::new(Expr::Number(3.0)),
                 }),
-            }])
+            })])
         );
     }
 
@@ -163,7 +190,10 @@ mod tests {
     fn separates_lines_and_ignores_blank_lines() {
         assert_eq!(
             parse(&tokenize("\n10\n\n20\n").unwrap()),
-            Ok(vec![Expr::Number(10.0), Expr::Number(20.0)])
+            Ok(vec![
+                Statement::Expression(Expr::Number(10.0)),
+                Statement::Expression(Expr::Number(20.0)),
+            ])
         );
         assert_eq!(parse(&[]), Ok(vec![]));
     }
@@ -179,7 +209,12 @@ mod tests {
             "1 2",
             "2(3)",
             "1 + * 2",
-            "puan = 10",
+            "puan =",
+            "puan =\n10",
+            "10 = 20",
+            "puan + 1 = 20",
+            "(puan) = 20",
+            "a = b = 10",
             "yaz(10)",
             "\"metin\"",
         ] {
@@ -188,5 +223,19 @@ mod tests {
                 "Hata bekleniyordu: {source}"
             );
         }
+    }
+
+    #[test]
+    fn distinguishes_assignment_from_variable_expression() {
+        assert_eq!(
+            parse(&tokenize("puan = 10\npuan").unwrap()),
+            Ok(vec![
+                Statement::Assignment {
+                    name: "puan".into(),
+                    value: Expr::Number(10.0),
+                },
+                Statement::Expression(Expr::Variable("puan".into())),
+            ])
+        );
     }
 }

@@ -3,7 +3,7 @@ mod lexer;
 mod parser;
 
 fn main() -> std::process::ExitCode {
-    let source = "10 + 20 * 3\n(10 + 20) * 3\n-3 * (2 + 4)\n5 / 2";
+    let source = "puan = 10\nbonus = 20\ntoplam = puan + bonus * 3\ntoplam\npuan = puan + 5\npuan";
 
     match run(source) {
         Ok(()) => std::process::ExitCode::SUCCESS,
@@ -16,11 +16,13 @@ fn main() -> std::process::ExitCode {
 
 fn run(source: &str) -> Result<(), String> {
     let tokens = lexer::tokenize(source)?;
-    let expressions = parser::parse(&tokens)?;
+    let statements = parser::parse(&tokens)?;
+    let mut interpreter = interpreter::Interpreter::default();
 
-    for expression in expressions {
-        let result = interpreter::evaluate(&expression)?;
-        println!("{result}");
+    for statement in &statements {
+        if let Some(result) = interpreter.execute(statement)? {
+            println!("{result}");
+        }
     }
 
     Ok(())
