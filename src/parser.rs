@@ -3,7 +3,9 @@ use crate::lexer::Token;
 #[derive(Debug, PartialEq)]
 pub enum Expr {
     Number(f64),
+    Text(String),
     Variable(String),
+    Positive(Box<Expr>),
     Negate(Box<Expr>),
     Binary {
         left: Box<Expr>,
@@ -15,6 +17,7 @@ pub enum Expr {
 #[derive(Debug, PartialEq)]
 pub enum Statement {
     Assignment { name: String, value: Expr },
+    Print(Vec<Expr>),
     Expression(Expr),
 }
 
@@ -59,6 +62,30 @@ impl Parser<'_> {
     }
 
     fn statement(&mut self) -> Result<Statement, String> {
+        if let Some(Token::Identifier(name)) = self.peek()
+            && name == "yaz"
+            && self.tokens.get(self.current + 1) == Some(&Token::LeftParen)
+        {
+            self.current += 2;
+            let mut arguments = Vec::new();
+
+            if self.peek() != Some(&Token::RightParen) {
+                loop {
+                    arguments.push(self.expression()?);
+                    if self.peek() != Some(&Token::Comma) {
+                        break;
+                    }
+                    self.current += 1;
+                }
+            }
+
+            if self.peek() != Some(&Token::RightParen) {
+                return Err("yaz çağrısında ',' veya ')' bekleniyor.".into());
+            }
+            self.current += 1;
+            return Ok(Statement::Print(arguments));
+        }
+
         if let Some(Token::Identifier(name)) = self.peek()
             && self.tokens.get(self.current + 1) == Some(&Token::Equal)
         {
@@ -123,7 +150,7 @@ impl Parser<'_> {
             }
             Some(Token::Plus) => {
                 self.current += 1;
-                self.unary()
+                Ok(Expr::Positive(Box::new(self.unary()?)))
             }
             _ => self.primary(),
         }
@@ -131,6 +158,11 @@ impl Parser<'_> {
 
     fn primary(&mut self) -> Result<Expr, String> {
         match self.peek() {
+            Some(Token::Text(text)) => {
+                let text = text.clone();
+                self.current += 1;
+                Ok(Expr::Text(text))
+            }
             Some(Token::Identifier(name)) => {
                 let name = name.clone();
                 self.current += 1;
@@ -158,9 +190,11 @@ impl Parser<'_> {
                 Ok(expression)
             }
             Some(token) => Err(format!(
-                "Sayı, değişken adı veya '(' bekleniyordu, bulunan: {token:?}"
+                "Sayı, metin, değişken adı veya '(' bekleniyordu, bulunan: {token:?}"
             )),
-            None => Err("İfade tamamlanmamış; sayı, değişken adı veya '(' bekleniyor.".into()),
+            None => {
+                Err("İfade tamamlanmamış; sayı, metin, değişken adı veya '(' bekleniyor.".into())
+            }
         }
     }
 }
@@ -215,8 +249,12 @@ mod tests {
             "puan + 1 = 20",
             "(puan) = 20",
             "a = b = 10",
-            "yaz(10)",
-            "\"metin\"",
+            "yaz(1 2)",
+            "yaz(1,)",
+            "yaz(,1)",
+            "yaz(1",
+            "yaz(1\n2)",
+            "sonuc = yaz(1)",
         ] {
             assert!(
                 parse(&tokenize(source).unwrap()).is_err(),
@@ -235,6 +273,24 @@ mod tests {
                     value: Expr::Number(10.0),
                 },
                 Statement::Expression(Expr::Variable("puan".into())),
+            ])
+        );
+    }
+
+    #[test]
+    fn parses_text_and_print_arguments() {
+        assert_eq!(
+            parse(&tokenize("isim = \"Herdem\"\nyaz(\"Merhaba\", isim)\nyaz()").unwrap()),
+            Ok(vec![
+                Statement::Assignment {
+                    name: "isim".into(),
+                    value: Expr::Text("Herdem".into()),
+                },
+                Statement::Print(vec![
+                    Expr::Text("Merhaba".into()),
+                    Expr::Variable("isim".into())
+                ]),
+                Statement::Print(vec![]),
             ])
         );
     }

@@ -3,7 +3,13 @@ mod lexer;
 mod parser;
 
 fn main() -> std::process::ExitCode {
-    let source = "puan = 10\nbonus = 20\ntoplam = puan + bonus * 3\ntoplam\npuan = puan + 5\npuan";
+    let source = r#"isim = "Herdem"
+puan = 10
+puan = puan + 5
+yaz("Merhaba", isim)
+yaz("Puanın:", puan)
+mesaj = "Merhaba " + isim
+yaz(mesaj)"#;
 
     match run(source) {
         Ok(()) => std::process::ExitCode::SUCCESS,
