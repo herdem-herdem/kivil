@@ -1,0 +1,5 @@
+isim = "Herdem"
+puan = 10
+puan = puan + 5
+yaz("Merhaba", isim)
+yaz("Puanın:", puan)
