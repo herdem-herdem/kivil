@@ -1,3 +1,4 @@
+mod diagnostic;
 mod interpreter;
 mod lexer;
 mod parser;
@@ -20,10 +21,10 @@ fn run_file() -> Result<(), String> {
     }
     let source = std::fs::read_to_string(&path)
         .map_err(|error| format!("Dosya okunamadı ({}): {error}", path.to_string_lossy()))?;
-    run(&source)
+    run(&source).map_err(|error| format!("{}:{error}", path.to_string_lossy()))
 }
 
-fn run(source: &str) -> Result<(), String> {
+fn run(source: &str) -> Result<(), diagnostic::Diagnostic> {
     let tokens = lexer::tokenize(source)?;
     let statements = parser::parse(&tokens)?;
     let mut interpreter = interpreter::Interpreter::default();
@@ -35,4 +36,27 @@ fn run(source: &str) -> Result<(), String> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::diagnostic::Position;
+
+    #[test]
+    fn reports_unicode_columns_and_runtime_locations() {
+        let error = run("isim = \"İ\"\n  10 / 0").unwrap_err();
+        assert_eq!(error.position, Some(Position { line: 2, column: 6 }));
+        let error = lexer::tokenize("öğrenci @").unwrap_err();
+        assert_eq!(error.position, Some(Position { line: 1, column: 9 }));
+        let error = run("1 +").unwrap_err();
+        assert_eq!(error.position, Some(Position { line: 1, column: 4 }));
+    }
+
+    #[test]
+    fn comments_preserve_newlines_and_hashes_inside_strings() {
+        assert!(run("# başlık\r\nisim = \"# metin\" # açıklama\r\nyaz(isim) # son").is_ok());
+        let error = run("1\n# açıklama\neksik").unwrap_err();
+        assert_eq!(error.position, Some(Position { line: 3, column: 1 }));
+    }
 }

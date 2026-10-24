@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::fmt;
 
+use crate::diagnostic::Diagnostic;
 use crate::parser::{Expr, Operator, Statement};
 
 #[derive(Debug, PartialEq, Clone)]
@@ -24,7 +25,7 @@ pub struct Interpreter {
 }
 
 impl Interpreter {
-    pub fn execute(&mut self, statement: &Statement) -> Result<Option<Value>, String> {
+    pub fn execute(&mut self, statement: &Statement) -> Result<Option<Value>, Diagnostic> {
         match statement {
             Statement::Assignment { name, value } => {
                 let value = self.evaluate(value)?;
@@ -42,8 +43,13 @@ impl Interpreter {
         }
     }
 
-    fn evaluate(&self, expression: &Expr) -> Result<Value, String> {
+    fn evaluate(&self, expression: &Expr) -> Result<Value, Diagnostic> {
         let result = match expression {
+            Expr::Located(expression, position) => {
+                return self
+                    .evaluate(expression)
+                    .map_err(|error| error.at(*position));
+            }
             Expr::Number(value) => Value::Number(*value),
             Expr::Text(text) => Value::Text(text.clone()),
             Expr::Variable(name) => self
@@ -114,13 +120,16 @@ mod tests {
     use crate::{lexer::tokenize, parser::parse};
 
     fn calculate(source: &str) -> Result<Vec<Value>, String> {
-        let tokens = tokenize(source)?;
-        let statements = parse(&tokens)?;
+        let tokens = tokenize(source).map_err(|error| error.message)?;
+        let statements = parse(&tokens).map_err(|error| error.message)?;
         let mut interpreter = Interpreter::default();
         let mut results = Vec::new();
 
         for statement in &statements {
-            if let Some(value) = interpreter.execute(statement)? {
+            if let Some(value) = interpreter
+                .execute(statement)
+                .map_err(|error| error.message)?
+            {
                 results.push(value);
             }
         }

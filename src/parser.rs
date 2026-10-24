@@ -1,7 +1,9 @@
-use crate::lexer::Token;
+use crate::diagnostic::{Diagnostic, Position};
+use crate::lexer::{Token, TokenKind};
 
 #[derive(Debug, PartialEq)]
 pub enum Expr {
+    Located(Box<Expr>, Position),
     Number(f64),
     Text(String),
     Variable(String),
@@ -29,22 +31,30 @@ pub enum Operator {
     Divide,
 }
 
-pub fn parse(tokens: &[Token]) -> Result<Vec<Statement>, String> {
+pub fn parse(tokens: &[Token]) -> Result<Vec<Statement>, Diagnostic> {
     let mut parser = Parser { tokens, current: 0 };
     let mut statements = Vec::new();
 
-    while parser.peek().is_some() {
-        if parser.peek() == Some(&Token::Newline) {
+    while parser.peek() != Some(&TokenKind::Eof) && parser.peek().is_some() {
+        if parser.peek() == Some(&TokenKind::Newline) {
             parser.current += 1;
             continue;
         }
 
-        statements.push(parser.statement()?);
+        statements.push(
+            parser
+                .statement()
+                .map_err(|error| error.at(parser.position()))?,
+        );
 
         if let Some(token) = parser.peek()
-            && *token != Token::Newline
+            && *token != TokenKind::Newline
+            && *token != TokenKind::Eof
         {
-            return Err(format!("İfade sonu bekleniyordu, bulunan: {token:?}"));
+            return Err(
+                Diagnostic::from(format!("İfade sonu bekleniyordu, bulunan: {token:?}"))
+                    .at(parser.position()),
+            );
         }
     }
 
@@ -57,37 +67,46 @@ struct Parser<'a> {
 }
 
 impl Parser<'_> {
-    fn peek(&self) -> Option<&Token> {
-        self.tokens.get(self.current)
+    fn peek(&self) -> Option<&TokenKind> {
+        self.tokens.get(self.current).map(|token| &token.kind)
     }
 
-    fn statement(&mut self) -> Result<Statement, String> {
-        if let Some(Token::Identifier(name)) = self.peek()
+    fn position(&self) -> Position {
+        self.tokens
+            .get(self.current)
+            .or_else(|| self.tokens.last())
+            .map(|token| token.position)
+            .unwrap_or(Position { line: 1, column: 1 })
+    }
+
+    fn statement(&mut self) -> Result<Statement, Diagnostic> {
+        if let Some(TokenKind::Identifier(name)) = self.peek()
             && name == "yaz"
-            && self.tokens.get(self.current + 1) == Some(&Token::LeftParen)
+            && self.tokens.get(self.current + 1).map(|token| &token.kind)
+                == Some(&TokenKind::LeftParen)
         {
             self.current += 2;
             let mut arguments = Vec::new();
 
-            if self.peek() != Some(&Token::RightParen) {
+            if self.peek() != Some(&TokenKind::RightParen) {
                 loop {
                     arguments.push(self.expression()?);
-                    if self.peek() != Some(&Token::Comma) {
+                    if self.peek() != Some(&TokenKind::Comma) {
                         break;
                     }
                     self.current += 1;
                 }
             }
 
-            if self.peek() != Some(&Token::RightParen) {
+            if self.peek() != Some(&TokenKind::RightParen) {
                 return Err("yaz çağrısında ',' veya ')' bekleniyor.".into());
             }
             self.current += 1;
             return Ok(Statement::Print(arguments));
         }
 
-        if let Some(Token::Identifier(name)) = self.peek()
-            && self.tokens.get(self.current + 1) == Some(&Token::Equal)
+        if let Some(TokenKind::Identifier(name)) = self.peek()
+            && self.tokens.get(self.current + 1).map(|token| &token.kind) == Some(&TokenKind::Equal)
         {
             let name = name.clone();
             self.current += 2;
@@ -98,92 +117,116 @@ impl Parser<'_> {
         Ok(Statement::Expression(self.expression()?))
     }
 
-    fn expression(&mut self) -> Result<Expr, String> {
+    fn expression(&mut self) -> Result<Expr, Diagnostic> {
         let mut left = self.term()?;
 
         loop {
             let operator = match self.peek() {
-                Some(Token::Plus) => Operator::Add,
-                Some(Token::Minus) => Operator::Subtract,
+                Some(TokenKind::Plus) => Operator::Add,
+                Some(TokenKind::Minus) => Operator::Subtract,
                 _ => break,
             };
+            let position = self.position();
             self.current += 1;
             let right = self.term()?;
 
-            left = Expr::Binary {
-                left: Box::new(left),
-                operator,
-                right: Box::new(right),
-            };
+            left = Expr::Located(
+                Box::new(Expr::Binary {
+                    left: Box::new(left),
+                    operator,
+                    right: Box::new(right),
+                }),
+                position,
+            );
         }
 
         Ok(left)
     }
 
-    fn term(&mut self) -> Result<Expr, String> {
+    fn term(&mut self) -> Result<Expr, Diagnostic> {
         let mut left = self.unary()?;
 
         loop {
             let operator = match self.peek() {
-                Some(Token::Star) => Operator::Multiply,
-                Some(Token::Slash) => Operator::Divide,
+                Some(TokenKind::Star) => Operator::Multiply,
+                Some(TokenKind::Slash) => Operator::Divide,
                 _ => break,
             };
+            let position = self.position();
             self.current += 1;
             let right = self.unary()?;
 
-            left = Expr::Binary {
-                left: Box::new(left),
-                operator,
-                right: Box::new(right),
-            };
+            left = Expr::Located(
+                Box::new(Expr::Binary {
+                    left: Box::new(left),
+                    operator,
+                    right: Box::new(right),
+                }),
+                position,
+            );
         }
 
         Ok(left)
     }
 
-    fn unary(&mut self) -> Result<Expr, String> {
+    fn unary(&mut self) -> Result<Expr, Diagnostic> {
+        let position = self.position();
         match self.peek() {
-            Some(Token::Minus) => {
+            Some(TokenKind::Minus) => {
                 self.current += 1;
-                Ok(Expr::Negate(Box::new(self.unary()?)))
+                Ok(Expr::Located(
+                    Box::new(Expr::Negate(Box::new(self.unary()?))),
+                    position,
+                ))
             }
-            Some(Token::Plus) => {
+            Some(TokenKind::Plus) => {
                 self.current += 1;
-                Ok(Expr::Positive(Box::new(self.unary()?)))
+                Ok(Expr::Located(
+                    Box::new(Expr::Positive(Box::new(self.unary()?))),
+                    position,
+                ))
             }
             _ => self.primary(),
         }
     }
 
-    fn primary(&mut self) -> Result<Expr, String> {
+    fn primary(&mut self) -> Result<Expr, Diagnostic> {
+        let position = self.position();
+        self.primary_value()
+            .map(|expression| Expr::Located(Box::new(expression), position))
+            .map_err(|error| error.at(position))
+    }
+
+    fn primary_value(&mut self) -> Result<Expr, Diagnostic> {
         match self.peek() {
-            Some(Token::Text(text)) => {
+            Some(TokenKind::Text(text)) => {
                 let text = text.clone();
                 self.current += 1;
                 Ok(Expr::Text(text))
             }
-            Some(Token::Identifier(name)) => {
+            Some(TokenKind::Identifier(name)) => {
                 let name = name.clone();
                 self.current += 1;
                 Ok(Expr::Variable(name))
             }
-            Some(Token::Integer(value)) => {
+            Some(TokenKind::Integer(value)) => {
                 let value = *value as f64;
                 self.current += 1;
                 Ok(Expr::Number(value))
             }
-            Some(Token::Float(value)) => {
+            Some(TokenKind::Float(value)) => {
                 let value = *value;
                 self.current += 1;
                 Ok(Expr::Number(value))
             }
-            Some(Token::LeftParen) => {
+            Some(TokenKind::LeftParen) => {
                 self.current += 1;
                 let expression = self.expression()?;
 
-                if self.peek() != Some(&Token::RightParen) {
-                    return Err("Kapanış parantezi ')' bekleniyor.".into());
+                if self.peek() != Some(&TokenKind::RightParen) {
+                    return Err(
+                        Diagnostic::from("Kapanış parantezi ')' bekleniyor.").at(self.position())
+                    );
                 }
                 self.current += 1;
 
@@ -191,7 +234,8 @@ impl Parser<'_> {
             }
             Some(token) => Err(format!(
                 "Sayı, metin, değişken adı veya '(' bekleniyordu, bulunan: {token:?}"
-            )),
+            )
+            .into()),
             None => {
                 Err("İfade tamamlanmamış; sayı, metin, değişken adı veya '(' bekleniyor.".into())
             }
@@ -201,7 +245,43 @@ impl Parser<'_> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Expr, Operator, Statement, parse};
+    use super::{Expr, Operator, Statement};
+    fn strip(expression: Expr) -> Expr {
+        match expression {
+            Expr::Located(inner, _) => strip(*inner),
+            Expr::Binary {
+                left,
+                operator,
+                right,
+            } => Expr::Binary {
+                left: Box::new(strip(*left)),
+                operator,
+                right: Box::new(strip(*right)),
+            },
+            Expr::Negate(inner) => Expr::Negate(Box::new(strip(*inner))),
+            Expr::Positive(inner) => Expr::Positive(Box::new(strip(*inner))),
+            other => other,
+        }
+    }
+    fn parse(tokens: &[crate::lexer::Token]) -> Result<Vec<Statement>, String> {
+        super::parse(tokens)
+            .map(|statements| {
+                statements
+                    .into_iter()
+                    .map(|statement| match statement {
+                        Statement::Assignment { name, value } => Statement::Assignment {
+                            name,
+                            value: strip(value),
+                        },
+                        Statement::Print(args) => {
+                            Statement::Print(args.into_iter().map(strip).collect())
+                        }
+                        Statement::Expression(expr) => Statement::Expression(strip(expr)),
+                    })
+                    .collect()
+            })
+            .map_err(|error| error.to_string())
+    }
     use crate::lexer::tokenize;
 
     #[test]
