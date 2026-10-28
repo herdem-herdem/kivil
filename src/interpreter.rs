@@ -7,12 +7,16 @@ use crate::parser::{Expr, Operator, Statement};
 #[derive(Debug, PartialEq, Clone)]
 pub enum Value {
     Number(f64),
+    Boolean(bool),
     Text(String),
 }
 
 impl fmt::Display for Value {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Value::Boolean(value) => {
+                write!(formatter, "{}", if *value { "dogru" } else { "yanlis" })
+            }
             Value::Number(value) => write!(formatter, "{value}"),
             Value::Text(text) => write!(formatter, "{text}"),
         }
@@ -51,6 +55,7 @@ impl Interpreter {
                     .map_err(|error| error.at(*position));
             }
             Expr::Number(value) => Value::Number(*value),
+            Expr::Boolean(value) => Value::Boolean(*value),
             Expr::Text(text) => Value::Text(text.clone()),
             Expr::Variable(name) => self
                 .variables
@@ -59,11 +64,11 @@ impl Interpreter {
                 .ok_or_else(|| format!("Tanımlanmamış değişken: {name}"))?,
             Expr::Negate(operand) => match self.evaluate(operand)? {
                 Value::Number(value) => Value::Number(-value),
-                Value::Text(_) => return Err("'-' işareti yalnızca sayılara uygulanabilir.".into()),
+                _ => return Err("'-' işareti yalnızca sayılara uygulanabilir.".into()),
             },
             Expr::Positive(operand) => match self.evaluate(operand)? {
                 Value::Number(value) => Value::Number(value),
-                Value::Text(_) => return Err("'+' işareti yalnızca sayılara uygulanabilir.".into()),
+                _ => return Err("'+' işareti yalnızca sayılara uygulanabilir.".into()),
             },
             Expr::Binary {
                 left,
@@ -74,6 +79,28 @@ impl Interpreter {
                 let right = self.evaluate(right)?;
 
                 match (left, operator, right) {
+                    (left, Operator::Equal, right) => Value::Boolean(left == right),
+                    (left, Operator::NotEqual, right) => Value::Boolean(left != right),
+                    (Value::Number(left), Operator::Less, Value::Number(right)) => {
+                        Value::Boolean(left < right)
+                    }
+                    (Value::Number(left), Operator::LessEqual, Value::Number(right)) => {
+                        Value::Boolean(left <= right)
+                    }
+                    (Value::Number(left), Operator::Greater, Value::Number(right)) => {
+                        Value::Boolean(left > right)
+                    }
+                    (Value::Number(left), Operator::GreaterEqual, Value::Number(right)) => {
+                        Value::Boolean(left >= right)
+                    }
+                    (
+                        _,
+                        Operator::Less
+                        | Operator::LessEqual
+                        | Operator::Greater
+                        | Operator::GreaterEqual,
+                        _,
+                    ) => return Err("Sıralama karşılaştırmaları iki sayı gerektiriyor.".into()),
                     (Value::Number(left), Operator::Add, Value::Number(right)) => {
                         Value::Number(left + right)
                     }
@@ -287,5 +314,24 @@ mod tests {
             interpreter.execute(&statements[2]),
             Ok(Some(Value::Text("Herdem".into())))
         );
+    }
+    #[test]
+    fn compares_values_and_respects_arithmetic_precedence() {
+        assert_eq!(
+            calculate(
+                "puan = 10\npuan + 5 >= 15\n2 < 3\n3 <= 3\n4 > 3\n4 != 3\n\"a\" == \"a\"\ndogru == yanlis\n1 == \"1\""
+            ),
+            Ok(vec![true, true, true, true, true, true, false, false]
+                .into_iter()
+                .map(Value::Boolean)
+                .collect())
+        );
+        assert_eq!(
+            calculate("yaz(dogru, yanlis)"),
+            Ok(vec![Value::Text("dogru yanlis".into())])
+        );
+        for source in ["dogru = 1", "1 < \"a\"", "dogru + 1", "-yanlis"] {
+            assert!(calculate(source).is_err(), "{source}");
+        }
     }
 }

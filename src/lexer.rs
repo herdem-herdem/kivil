@@ -3,6 +3,14 @@ use crate::diagnostic::{Diagnostic, Position};
 #[derive(Debug, PartialEq)]
 pub enum TokenKind {
     Eof,
+    True,
+    False,
+    EqualEqual,
+    NotEqual,
+    Less,
+    LessEqual,
+    Greater,
+    GreaterEqual,
     Integer(i64),
     Float(f64),
     Identifier(String),
@@ -60,7 +68,38 @@ pub fn tokenize(source: &str) -> Result<Vec<Token>, Diagnostic> {
                 '-' => TokenKind::Minus,
                 '*' => TokenKind::Star,
                 '/' => TokenKind::Slash,
-                '=' => TokenKind::Equal,
+                '=' => {
+                    if chars.peek().is_some_and(|(ch, _)| *ch == '=') {
+                        chars.next();
+                        TokenKind::EqualEqual
+                    } else {
+                        TokenKind::Equal
+                    }
+                }
+                '!' => {
+                    if chars.peek().is_some_and(|(ch, _)| *ch == '=') {
+                        chars.next();
+                        TokenKind::NotEqual
+                    } else {
+                        return Err("'!' sonrasında '=' bekleniyor.".into());
+                    }
+                }
+                '<' => {
+                    if chars.peek().is_some_and(|(ch, _)| *ch == '=') {
+                        chars.next();
+                        TokenKind::LessEqual
+                    } else {
+                        TokenKind::Less
+                    }
+                }
+                '>' => {
+                    if chars.peek().is_some_and(|(ch, _)| *ch == '=') {
+                        chars.next();
+                        TokenKind::GreaterEqual
+                    } else {
+                        TokenKind::Greater
+                    }
+                }
                 ',' => TokenKind::Comma,
                 '0'..='9' => {
                     let mut number = String::from(ch);
@@ -136,7 +175,11 @@ pub fn tokenize(source: &str) -> Result<Vec<Token>, Diagnostic> {
                         name.push(chars.next().unwrap().0);
                     }
 
-                    TokenKind::Identifier(name)
+                    match name.as_str() {
+                        "dogru" => TokenKind::True,
+                        "yanlis" => TokenKind::False,
+                        _ => TokenKind::Identifier(name),
+                    }
                 }
                 other => return Err(format!("Tanınmayan karakter: {other}").into()),
             };

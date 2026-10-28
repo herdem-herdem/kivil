@@ -5,6 +5,7 @@ use crate::lexer::{Token, TokenKind};
 pub enum Expr {
     Located(Box<Expr>, Position),
     Number(f64),
+    Boolean(bool),
     Text(String),
     Variable(String),
     Positive(Box<Expr>),
@@ -25,6 +26,12 @@ pub enum Statement {
 
 #[derive(Debug, PartialEq)]
 pub enum Operator {
+    Equal,
+    NotEqual,
+    Less,
+    LessEqual,
+    Greater,
+    GreaterEqual,
     Add,
     Subtract,
     Multiply,
@@ -118,6 +125,58 @@ impl Parser<'_> {
     }
 
     fn expression(&mut self) -> Result<Expr, Diagnostic> {
+        self.equality()
+    }
+
+    fn equality(&mut self) -> Result<Expr, Diagnostic> {
+        let mut left = self.comparison()?;
+        loop {
+            let operator = match self.peek() {
+                Some(TokenKind::EqualEqual) => Operator::Equal,
+                Some(TokenKind::NotEqual) => Operator::NotEqual,
+                _ => break,
+            };
+            let position = self.position();
+            self.current += 1;
+            let right = self.comparison()?;
+            left = Expr::Located(
+                Box::new(Expr::Binary {
+                    left: Box::new(left),
+                    operator,
+                    right: Box::new(right),
+                }),
+                position,
+            );
+        }
+        Ok(left)
+    }
+
+    fn comparison(&mut self) -> Result<Expr, Diagnostic> {
+        let mut left = self.addition()?;
+        loop {
+            let operator = match self.peek() {
+                Some(TokenKind::Less) => Operator::Less,
+                Some(TokenKind::LessEqual) => Operator::LessEqual,
+                Some(TokenKind::Greater) => Operator::Greater,
+                Some(TokenKind::GreaterEqual) => Operator::GreaterEqual,
+                _ => break,
+            };
+            let position = self.position();
+            self.current += 1;
+            let right = self.addition()?;
+            left = Expr::Located(
+                Box::new(Expr::Binary {
+                    left: Box::new(left),
+                    operator,
+                    right: Box::new(right),
+                }),
+                position,
+            );
+        }
+        Ok(left)
+    }
+
+    fn addition(&mut self) -> Result<Expr, Diagnostic> {
         let mut left = self.term()?;
 
         loop {
@@ -199,6 +258,14 @@ impl Parser<'_> {
 
     fn primary_value(&mut self) -> Result<Expr, Diagnostic> {
         match self.peek() {
+            Some(TokenKind::True) => {
+                self.current += 1;
+                Ok(Expr::Boolean(true))
+            }
+            Some(TokenKind::False) => {
+                self.current += 1;
+                Ok(Expr::Boolean(false))
+            }
             Some(TokenKind::Text(text)) => {
                 let text = text.clone();
                 self.current += 1;
