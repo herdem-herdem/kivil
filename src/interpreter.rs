@@ -62,6 +62,10 @@ impl Interpreter {
                 .get(name)
                 .cloned()
                 .ok_or_else(|| format!("Tanımlanmamış değişken: {name}"))?,
+            Expr::Not(operand) => match self.evaluate(operand)? {
+                Value::Boolean(value) => Value::Boolean(!value),
+                _ => return Err("'degil' mantıksal bir değer gerektiriyor.".into()),
+            },
             Expr::Negate(operand) => match self.evaluate(operand)? {
                 Value::Number(value) => Value::Number(-value),
                 _ => return Err("'-' işareti yalnızca sayılara uygulanabilir.".into()),
@@ -76,6 +80,20 @@ impl Interpreter {
                 right,
             } => {
                 let left = self.evaluate(left)?;
+                if matches!(operator, Operator::And | Operator::Or) {
+                    let Value::Boolean(left) = left else {
+                        return Err("'ve' ve 'veya' mantıksal değerler gerektiriyor.".into());
+                    };
+                    if (matches!(operator, Operator::And) && !left)
+                        || (matches!(operator, Operator::Or) && left)
+                    {
+                        return Ok(Value::Boolean(left));
+                    }
+                    return match self.evaluate(right)? {
+                        Value::Boolean(right) => Ok(Value::Boolean(right)),
+                        _ => Err("'ve' ve 'veya' mantıksal değerler gerektiriyor.".into()),
+                    };
+                }
                 let right = self.evaluate(right)?;
 
                 match (left, operator, right) {
@@ -331,6 +349,27 @@ mod tests {
             Ok(vec![Value::Text("dogru yanlis".into())])
         );
         for source in ["dogru = 1", "1 < \"a\"", "dogru + 1", "-yanlis"] {
+            assert!(calculate(source).is_err(), "{source}");
+        }
+    }
+    #[test]
+    fn logical_operators_short_circuit_and_check_types() {
+        assert_eq!(
+            calculate(
+                "yanlis ve (1 / 0 > 1)\ndogru veya eksik\nyanlis veya dogru ve dogru\ndegil 2 > 3\ndegil degil dogru"
+            ),
+            Ok(vec![false, true, true, true, true]
+                .into_iter()
+                .map(Value::Boolean)
+                .collect())
+        );
+        for source in [
+            "dogru ve eksik",
+            "yanlis veya eksik",
+            "1 ve dogru",
+            "yanlis veya 1",
+            "degil 1",
+        ] {
             assert!(calculate(source).is_err(), "{source}");
         }
     }

@@ -6,6 +6,7 @@ pub enum Expr {
     Located(Box<Expr>, Position),
     Number(f64),
     Boolean(bool),
+    Not(Box<Expr>),
     Text(String),
     Variable(String),
     Positive(Box<Expr>),
@@ -26,6 +27,8 @@ pub enum Statement {
 
 #[derive(Debug, PartialEq)]
 pub enum Operator {
+    And,
+    Or,
     Equal,
     NotEqual,
     Less,
@@ -125,7 +128,56 @@ impl Parser<'_> {
     }
 
     fn expression(&mut self) -> Result<Expr, Diagnostic> {
-        self.equality()
+        self.logical_or()
+    }
+
+    fn logical_or(&mut self) -> Result<Expr, Diagnostic> {
+        let mut left = self.logical_and()?;
+        while self.peek() == Some(&TokenKind::Or) {
+            let position = self.position();
+            self.current += 1;
+            let right = self.logical_and()?;
+            left = Expr::Located(
+                Box::new(Expr::Binary {
+                    left: Box::new(left),
+                    operator: Operator::Or,
+                    right: Box::new(right),
+                }),
+                position,
+            );
+        }
+        Ok(left)
+    }
+
+    fn logical_and(&mut self) -> Result<Expr, Diagnostic> {
+        let mut left = self.logical_not()?;
+        while self.peek() == Some(&TokenKind::And) {
+            let position = self.position();
+            self.current += 1;
+            let right = self.logical_not()?;
+            left = Expr::Located(
+                Box::new(Expr::Binary {
+                    left: Box::new(left),
+                    operator: Operator::And,
+                    right: Box::new(right),
+                }),
+                position,
+            );
+        }
+        Ok(left)
+    }
+
+    fn logical_not(&mut self) -> Result<Expr, Diagnostic> {
+        if self.peek() == Some(&TokenKind::Not) {
+            let position = self.position();
+            self.current += 1;
+            Ok(Expr::Located(
+                Box::new(Expr::Not(Box::new(self.logical_not()?))),
+                position,
+            ))
+        } else {
+            self.equality()
+        }
     }
 
     fn equality(&mut self) -> Result<Expr, Diagnostic> {

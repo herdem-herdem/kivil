@@ -3,6 +3,9 @@ use crate::diagnostic::{Diagnostic, Position};
 #[derive(Debug, PartialEq)]
 pub enum TokenKind {
     Eof,
+    And,
+    Or,
+    Not,
     True,
     False,
     EqualEqual,
@@ -176,6 +179,9 @@ pub fn tokenize(source: &str) -> Result<Vec<Token>, Diagnostic> {
                     }
 
                     match name.as_str() {
+                        "ve" => TokenKind::And,
+                        "veya" => TokenKind::Or,
+                        "degil" => TokenKind::Not,
                         "dogru" => TokenKind::True,
                         "yanlis" => TokenKind::False,
                         _ => TokenKind::Identifier(name),
