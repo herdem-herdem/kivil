@@ -3,6 +3,10 @@ use crate::diagnostic::{Diagnostic, Position};
 #[derive(Debug, PartialEq)]
 pub enum TokenKind {
     Eof,
+    If,
+    Else,
+    LeftBrace,
+    RightBrace,
     And,
     Or,
     Not,
@@ -65,6 +69,8 @@ pub fn tokenize(source: &str) -> Result<Vec<Token>, Diagnostic> {
             let token = match ch {
                 ' ' | '\t' | '\r' => unreachable!(),
                 '\n' => TokenKind::Newline,
+                '{' => TokenKind::LeftBrace,
+                '}' => TokenKind::RightBrace,
                 '(' => TokenKind::LeftParen,
                 ')' => TokenKind::RightParen,
                 '+' => TokenKind::Plus,
@@ -179,6 +185,8 @@ pub fn tokenize(source: &str) -> Result<Vec<Token>, Diagnostic> {
                     }
 
                     match name.as_str() {
+                        "eger" => TokenKind::If,
+                        "degilse" => TokenKind::Else,
                         "ve" => TokenKind::And,
                         "veya" => TokenKind::Or,
                         "degil" => TokenKind::Not,

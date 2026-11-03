@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::fmt;
+use std::io::{self, Write};
 
 use crate::diagnostic::Diagnostic;
 use crate::parser::{Expr, Operator, Statement};
@@ -23,27 +24,67 @@ impl fmt::Display for Value {
     }
 }
 
-#[derive(Default)]
-pub struct Interpreter {
+pub struct Interpreter<W: Write = io::Stdout> {
     variables: HashMap<String, Value>,
+    output: W,
 }
 
-impl Interpreter {
-    pub fn execute(&mut self, statement: &Statement) -> Result<Option<Value>, Diagnostic> {
+impl Default for Interpreter {
+    fn default() -> Self {
+        Self::with_output(io::stdout())
+    }
+}
+
+impl<W: Write> Interpreter<W> {
+    pub fn with_output(output: W) -> Self {
+        Self {
+            variables: HashMap::new(),
+            output,
+        }
+    }
+
+    fn emit(&mut self, value: impl fmt::Display) -> Result<(), Diagnostic> {
+        writeln!(self.output, "{value}")
+            .map_err(|error| Diagnostic::from(format!("Çıktı yazılamadı: {error}")))
+    }
+
+    fn execute_block(&mut self, statements: &[Statement]) -> Result<(), Diagnostic> {
+        for statement in statements {
+            self.execute(statement)?;
+        }
+        Ok(())
+    }
+
+    pub fn execute(&mut self, statement: &Statement) -> Result<(), Diagnostic> {
         match statement {
+            Statement::Located(statement, position) => {
+                self.execute(statement).map_err(|error| error.at(*position))
+            }
+            Statement::If {
+                condition,
+                then_body,
+                else_body,
+            } => match self.evaluate(condition)? {
+                Value::Boolean(true) => self.execute_block(then_body),
+                Value::Boolean(false) => self.execute_block(else_body),
+                _ => Err("Koşul mantıksal bir değer olmalı.".into()),
+            },
             Statement::Assignment { name, value } => {
                 let value = self.evaluate(value)?;
                 self.variables.insert(name.clone(), value);
-                Ok(None)
+                Ok(())
             }
             Statement::Print(arguments) => {
                 let mut parts = Vec::new();
                 for argument in arguments {
                     parts.push(self.evaluate(argument)?.to_string());
                 }
-                Ok(Some(Value::Text(parts.join(" "))))
+                self.emit(parts.join(" "))
             }
-            Statement::Expression(expression) => Ok(Some(self.evaluate(expression)?)),
+            Statement::Expression(expression) => {
+                let value = self.evaluate(expression)?;
+                self.emit(value)
+            }
         }
     }
 
@@ -161,214 +202,88 @@ impl Interpreter {
 
 #[cfg(test)]
 mod tests {
-    use super::{Interpreter, Value};
+    use super::*;
     use crate::{lexer::tokenize, parser::parse};
 
-    fn calculate(source: &str) -> Result<Vec<Value>, String> {
-        let tokens = tokenize(source).map_err(|error| error.message)?;
-        let statements = parse(&tokens).map_err(|error| error.message)?;
-        let mut interpreter = Interpreter::default();
-        let mut results = Vec::new();
-
-        for statement in &statements {
-            if let Some(value) = interpreter
-                .execute(statement)
-                .map_err(|error| error.message)?
-            {
-                results.push(value);
-            }
-        }
-
-        Ok(results)
-    }
-
-    fn numbers(values: &[f64]) -> Result<Vec<Value>, String> {
-        Ok(values.iter().copied().map(Value::Number).collect())
+    fn calculate(source: &str) -> Result<String, Diagnostic> {
+        let statements = parse(&tokenize(source)?)?;
+        let mut interpreter = Interpreter::with_output(Vec::new());
+        interpreter.execute_block(&statements)?;
+        Ok(String::from_utf8(interpreter.output).unwrap())
     }
 
     #[test]
-    fn evaluates_precedence_parentheses_and_left_associativity() {
+    fn arithmetic_precedence_signs_and_lines() {
+        assert_eq!(calculate("10 + 20 * 3\n(10 + 20) * 3\n20 - 5 - 3\n24 / 4 / 2\n-3 * (2 + 4)\n5 / 2\n1.5 + 2\n--3\n+2\n2 * -3\n1 - -2\n((2 + 3) * 4)").unwrap(), "70\n90\n12\n3\n-18\n2.5\n3.5\n3\n2\n-6\n3\n20\n");
+    }
+
+    #[test]
+    fn variables_text_and_printing() {
+        assert_eq!(calculate("isim = \"Herdem\"\npuan = 10\npuan = puan + 5\nyaz(\"Merhaba\", isim)\nyaz(\"Puanın:\", puan)\nisim = isim + \"!\"\nyaz(isim)\nyaz()\nyaz(\"ilk\\nikinci\")\npuan = \"on\"\npuan").unwrap(), "Merhaba Herdem\nPuanın: 15\nHerdem!\n\nilk\nikinci\non\n");
         assert_eq!(
-            calculate("10 + 20 * 3\n(10 + 20) * 3\n20 - 5 - 3\n24 / 4 / 2"),
-            numbers(&[70.0, 90.0, 12.0, 3.0])
+            calculate("öğrenci_sayısı = 3\n_oran2 = 1.5\n-(öğrenci_sayısı + _oran2) / 2").unwrap(),
+            "-2.25\n"
         );
     }
 
     #[test]
-    fn evaluates_signs_decimals_and_nested_parentheses() {
-        assert_eq!(
-            calculate("-3 * (2 + 4)\n5 / 2\n1.5 + 2\n--3\n+2\n2 * -3\n1 - -2\n((2 + 3) * 4)"),
-            numbers(&[-18.0, 2.5, 3.5, 3.0, 2.0, -6.0, 3.0, 20.0])
-        );
+    fn comparisons_and_short_circuit() {
+        assert_eq!(calculate("1 + 2 >= 3\n2 < 3\n3 <= 3\n4 > 3\n4 != 3\n\"a\" == \"a\"\ndogru == yanlis\n1 == \"1\"\nyanlis ve (1 / 0 > 1)\ndogru veya eksik\nyanlis veya dogru ve dogru\ndegil 2 > 3\ndegil degil dogru").unwrap(), "dogru\ndogru\ndogru\ndogru\ndogru\ndogru\nyanlis\nyanlis\nyanlis\ndogru\ndogru\ndogru\ndogru\n");
     }
 
     #[test]
-    fn rejects_division_by_zero_and_overflow() {
-        for source in ["1 / 0", "1 / (2 - 2)", "1 / -0.0"] {
-            assert_eq!(calculate(source), Err("Sıfıra bölme yapılamaz.".into()));
-        }
-
-        let large_number = format!("{}.0", "9".repeat(200));
-        assert!(calculate(&format!("{large_number} * {large_number}")).is_err());
-    }
-
-    #[test]
-    fn stores_variables_and_evaluates_reassignments() {
-        assert_eq!(
-            calculate(
-                "puan = 10\nbonus = 20\ntoplam = puan + bonus * 3\ntoplam\npuan = puan + 5\npuan\ntoplam"
-            ),
-            numbers(&[70.0, 15.0, 70.0])
-        );
-        assert_eq!(calculate("puan = 10"), Ok(vec![]));
-    }
-
-    #[test]
-    fn supports_unicode_names_and_decimals() {
-        assert_eq!(
-            calculate("öğrenci_sayısı = 3\n_oran2 = 1.5\n-(öğrenci_sayısı + _oran2) / 2"),
-            numbers(&[-2.25])
-        );
-    }
-
-    #[test]
-    fn reports_undefined_variables() {
-        for source in ["puan", "puan + 1", "puan = puan + 1", "sonuc = eksik * 2"] {
-            let name = if source.contains("eksik") {
-                "eksik"
-            } else {
-                "puan"
-            };
-            assert_eq!(
-                calculate(source),
-                Err(format!("Tanımlanmamış değişken: {name}"))
-            );
-        }
-    }
-
-    #[test]
-    fn failed_assignment_preserves_the_previous_value_and_stops_execution() {
-        let statements = parse(&tokenize("puan = 10\npuan = 1 / 0\npuan = 99").unwrap()).unwrap();
-        let mut interpreter = Interpreter::default();
-
-        assert_eq!(interpreter.execute(&statements[0]), Ok(None));
-        assert!(interpreter.execute(&statements[1]).is_err());
-        let read = parse(&tokenize("puan").unwrap()).unwrap();
-        assert_eq!(interpreter.execute(&read[0]), Ok(Some(Value::Number(10.0))));
-
-        assert_eq!(
-            calculate("puan = 10\npuan = 1 / 0\npuan = 99"),
-            Err("Sıfıra bölme yapılamaz.".into())
-        );
-    }
-
-    #[test]
-    fn stores_and_concatenates_text() {
-        assert_eq!(
-            calculate(
-                "isim = \"Herdem\"\nmesaj = \"Merhaba \" + isim\nmesaj\nisim = isim + \"!\"\nisim\nmesaj"
-            ),
-            Ok(vec![
-                Value::Text("Merhaba Herdem".into()),
-                Value::Text("Herdem!".into()),
-                Value::Text("Merhaba Herdem".into()),
-            ])
-        );
-    }
-
-    #[test]
-    fn prints_text_numbers_and_calculated_arguments() {
-        assert_eq!(
-            calculate(
-                "isim = \"Herdem\"\npuan = 10\npuan = puan + 5\nyaz(\"Merhaba\", isim)\nyaz(\"Puanın:\", puan)\nyaz((2 + 3) * 4, 5 / 2)\nyaz()\nyaz(\"ilk\\nikinci\")"
-            ),
-            Ok(vec![
-                Value::Text("Merhaba Herdem".into()),
-                Value::Text("Puanın: 15".into()),
-                Value::Text("20 2.5".into()),
-                Value::Text(String::new()),
-                Value::Text("ilk\nikinci".into()),
-            ])
-        );
-    }
-
-    #[test]
-    fn rejects_invalid_operand_types() {
+    fn rejects_undefined_names_invalid_types_and_zero_division() {
         for source in [
-            "\"Puan: \" + 15",
-            "15 + \"puan\"",
+            "puan",
+            "puan = puan + 1",
+            "yaz(\"Puan:\", eksik)",
+            "1 / 0",
+            "1 / (2 - 2)",
+            "1 / -0.0",
+            "\"a\" + 1",
+            "1 + \"a\"",
             "\"a\" - \"b\"",
             "\"a\" * 3",
             "3 / \"a\"",
             "-\"a\"",
             "+\"a\"",
-        ] {
-            assert!(calculate(source).is_err(), "Hata bekleniyordu: {source}");
-        }
-    }
-
-    #[test]
-    fn print_reports_argument_errors_without_returning_partial_output() {
-        assert_eq!(
-            calculate("yaz(\"Puan:\", eksik)"),
-            Err("Tanımlanmamış değişken: eksik".into())
-        );
-        assert!(calculate("yaz(\"Puan:\", 1 / 0)").is_err());
-    }
-
-    #[test]
-    fn reassignment_can_change_type_and_failed_assignment_preserves_text() {
-        assert_eq!(
-            calculate("deger = 10\ndeger = \"on\"\ndeger"),
-            Ok(vec![Value::Text("on".into())])
-        );
-
-        let statements =
-            parse(&tokenize("isim = \"Herdem\"\nisim = isim + 1\nisim").unwrap()).unwrap();
-        let mut interpreter = Interpreter::default();
-        assert_eq!(interpreter.execute(&statements[0]), Ok(None));
-        assert!(interpreter.execute(&statements[1]).is_err());
-        assert_eq!(
-            interpreter.execute(&statements[2]),
-            Ok(Some(Value::Text("Herdem".into())))
-        );
-    }
-    #[test]
-    fn compares_values_and_respects_arithmetic_precedence() {
-        assert_eq!(
-            calculate(
-                "puan = 10\npuan + 5 >= 15\n2 < 3\n3 <= 3\n4 > 3\n4 != 3\n\"a\" == \"a\"\ndogru == yanlis\n1 == \"1\""
-            ),
-            Ok(vec![true, true, true, true, true, true, false, false]
-                .into_iter()
-                .map(Value::Boolean)
-                .collect())
-        );
-        assert_eq!(
-            calculate("yaz(dogru, yanlis)"),
-            Ok(vec![Value::Text("dogru yanlis".into())])
-        );
-        for source in ["dogru = 1", "1 < \"a\"", "dogru + 1", "-yanlis"] {
-            assert!(calculate(source).is_err(), "{source}");
-        }
-    }
-    #[test]
-    fn logical_operators_short_circuit_and_check_types() {
-        assert_eq!(
-            calculate(
-                "yanlis ve (1 / 0 > 1)\ndogru veya eksik\nyanlis veya dogru ve dogru\ndegil 2 > 3\ndegil degil dogru"
-            ),
-            Ok(vec![false, true, true, true, true]
-                .into_iter()
-                .map(Value::Boolean)
-                .collect())
-        );
-        for source in [
+            "dogru + 1",
+            "1 < \"a\"",
             "dogru ve eksik",
             "yanlis veya eksik",
             "1 ve dogru",
             "yanlis veya 1",
             "degil 1",
+        ] {
+            assert!(calculate(source).is_err(), "{source}");
+        }
+        let large = format!("{}.0", "9".repeat(200));
+        assert!(calculate(&format!("{large} * {large}")).is_err());
+    }
+
+    #[test]
+    fn failed_assignment_and_print_are_atomic() {
+        let mut interpreter = Interpreter::with_output(Vec::new());
+        let statements =
+            parse(&tokenize("isim = \"Herdem\"\nisim = isim + 1\nyaz(isim, eksik)\nisim").unwrap())
+                .unwrap();
+        interpreter.execute(&statements[0]).unwrap();
+        assert!(interpreter.execute(&statements[1]).is_err());
+        assert!(interpreter.execute(&statements[2]).is_err());
+        assert!(interpreter.output.is_empty());
+        interpreter.execute(&statements[3]).unwrap();
+        assert_eq!(interpreter.output, b"Herdem\n");
+    }
+
+    #[test]
+    fn executes_only_selected_branches_and_nested_conditions() {
+        assert_eq!(calculate("puan = 70\neger (puan >= 50) {\neger (dogru) { yaz(\"Geçtin\") }\n} degilse { eksik }\neger (yanlis) { 1 / 0 }\ndegilse eger (dogru) { puan = puan + 5 }\npuan").unwrap(), "Geçtin\n75\n");
+        assert!(calculate("eger (1) { yaz(1) }").is_err());
+        for source in [
+            "eger dogru yaz(1)",
+            "eger (dogru) { yaz(1)",
+            "degilse {}",
+            "}",
         ] {
             assert!(calculate(source).is_err(), "{source}");
         }

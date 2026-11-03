@@ -30,9 +30,7 @@ fn run(source: &str) -> Result<(), diagnostic::Diagnostic> {
     let mut interpreter = interpreter::Interpreter::default();
 
     for statement in &statements {
-        if let Some(result) = interpreter.execute(statement)? {
-            println!("{result}");
-        }
+        interpreter.execute(statement)?;
     }
 
     Ok(())

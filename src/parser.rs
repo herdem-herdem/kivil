@@ -20,7 +20,16 @@ pub enum Expr {
 
 #[derive(Debug, PartialEq)]
 pub enum Statement {
-    Assignment { name: String, value: Expr },
+    Located(Box<Statement>, Position),
+    If {
+        condition: Expr,
+        then_body: Vec<Statement>,
+        else_body: Vec<Statement>,
+    },
+    Assignment {
+        name: String,
+        value: Expr,
+    },
     Print(Vec<Expr>),
     Expression(Expr),
 }
@@ -43,32 +52,7 @@ pub enum Operator {
 
 pub fn parse(tokens: &[Token]) -> Result<Vec<Statement>, Diagnostic> {
     let mut parser = Parser { tokens, current: 0 };
-    let mut statements = Vec::new();
-
-    while parser.peek() != Some(&TokenKind::Eof) && parser.peek().is_some() {
-        if parser.peek() == Some(&TokenKind::Newline) {
-            parser.current += 1;
-            continue;
-        }
-
-        statements.push(
-            parser
-                .statement()
-                .map_err(|error| error.at(parser.position()))?,
-        );
-
-        if let Some(token) = parser.peek()
-            && *token != TokenKind::Newline
-            && *token != TokenKind::Eof
-        {
-            return Err(
-                Diagnostic::from(format!("İfade sonu bekleniyordu, bulunan: {token:?}"))
-                    .at(parser.position()),
-            );
-        }
-    }
-
-    Ok(statements)
+    parser.sequence(false)
 }
 
 struct Parser<'a> {
@@ -89,7 +73,87 @@ impl Parser<'_> {
             .unwrap_or(Position { line: 1, column: 1 })
     }
 
+    fn sequence(&mut self, in_block: bool) -> Result<Vec<Statement>, Diagnostic> {
+        let mut statements = Vec::new();
+        loop {
+            while self.peek() == Some(&TokenKind::Newline) {
+                self.current += 1;
+            }
+            if self.peek().is_none() || self.peek() == Some(&TokenKind::Eof) {
+                break;
+            }
+            if in_block && self.peek() == Some(&TokenKind::RightBrace) {
+                break;
+            }
+            statements.push(self.statement()?);
+            let at_end = matches!(self.peek(), Some(TokenKind::Newline | TokenKind::Eof))
+                || (in_block && self.peek() == Some(&TokenKind::RightBrace));
+            if !at_end {
+                return Err(Diagnostic::from("Komut sonu bekleniyor.").at(self.position()));
+            }
+        }
+        Ok(statements)
+    }
+
+    fn block(&mut self) -> Result<Vec<Statement>, Diagnostic> {
+        if self.peek() != Some(&TokenKind::LeftBrace) {
+            return Err(Diagnostic::from("Blok başlangıcı '{' bekleniyor.").at(self.position()));
+        }
+        self.current += 1;
+        let body = self.sequence(true)?;
+        if self.peek() != Some(&TokenKind::RightBrace) {
+            return Err(Diagnostic::from("Blok sonu '}' bekleniyor.").at(self.position()));
+        }
+        self.current += 1;
+        Ok(body)
+    }
+
     fn statement(&mut self) -> Result<Statement, Diagnostic> {
+        let position = self.position();
+        self.statement_value()
+            .map(|statement| Statement::Located(Box::new(statement), position))
+            .map_err(|error| error.at(self.position()))
+    }
+
+    fn statement_value(&mut self) -> Result<Statement, Diagnostic> {
+        if self.peek() == Some(&TokenKind::If) {
+            self.current += 1;
+            if self.peek() != Some(&TokenKind::LeftParen) {
+                return Err(
+                    Diagnostic::from("eger koşulundan önce '(' bekleniyor.").at(self.position())
+                );
+            }
+            self.current += 1;
+            let condition = self.expression()?;
+            if self.peek() != Some(&TokenKind::RightParen) {
+                return Err(
+                    Diagnostic::from("eger koşulundan sonra ')' bekleniyor.").at(self.position())
+                );
+            }
+            self.current += 1;
+            let then_body = self.block()?;
+            let after_block = self.current;
+            while self.peek() == Some(&TokenKind::Newline) {
+                self.current += 1;
+            }
+            let else_body = if self.peek() == Some(&TokenKind::Else) {
+                self.current += 1;
+                if self.peek() == Some(&TokenKind::If) {
+                    vec![self.statement()?]
+                } else {
+                    self.block()?
+                }
+            } else {
+                self.current = after_block;
+                Vec::new()
+            };
+            return Ok(Statement::If {
+                condition,
+                then_body,
+                else_body,
+            });
+        }
+
         if let Some(TokenKind::Identifier(name)) = self.peek()
             && name == "yaz"
             && self.tokens.get(self.current + 1).map(|token| &token.kind)
@@ -382,23 +446,21 @@ mod tests {
             other => other,
         }
     }
+    fn strip_statement(statement: Statement) -> Statement {
+        match statement {
+            Statement::Located(statement, _) => strip_statement(*statement),
+            Statement::Assignment { name, value } => Statement::Assignment {
+                name,
+                value: strip(value),
+            },
+            Statement::Print(args) => Statement::Print(args.into_iter().map(strip).collect()),
+            Statement::Expression(expr) => Statement::Expression(strip(expr)),
+            other => other,
+        }
+    }
     fn parse(tokens: &[crate::lexer::Token]) -> Result<Vec<Statement>, String> {
         super::parse(tokens)
-            .map(|statements| {
-                statements
-                    .into_iter()
-                    .map(|statement| match statement {
-                        Statement::Assignment { name, value } => Statement::Assignment {
-                            name,
-                            value: strip(value),
-                        },
-                        Statement::Print(args) => {
-                            Statement::Print(args.into_iter().map(strip).collect())
-                        }
-                        Statement::Expression(expr) => Statement::Expression(strip(expr)),
-                    })
-                    .collect()
-            })
+            .map(|statements| statements.into_iter().map(strip_statement).collect())
             .map_err(|error| error.to_string())
     }
     use crate::lexer::tokenize;
@@ -492,5 +554,25 @@ mod tests {
                 Statement::Print(vec![]),
             ])
         );
+    }
+
+    #[test]
+    fn requires_parentheses_around_if_and_else_if_conditions() {
+        for source in [
+            "eger (dogru) {}",
+            "eger ((1 + 2) > 2) { 1 } degilse { 2 }",
+            "eger (yanlis) {} degilse eger (dogru) {}",
+        ] {
+            assert!(parse(&tokenize(source).unwrap()).is_ok(), "{source}");
+        }
+        for source in [
+            "eger dogru {}",
+            "eger (yanlis) {} degilse eger dogru {}",
+            "eger () {}",
+            "eger (dogru {}",
+            "eger (dogru) veya yanlis {}",
+        ] {
+            assert!(parse(&tokenize(source).unwrap()).is_err(), "{source}");
+        }
     }
 }
