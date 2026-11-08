@@ -3,6 +3,8 @@ use crate::diagnostic::{Diagnostic, Position};
 #[derive(Debug, PartialEq)]
 pub enum TokenKind {
     Eof,
+    While,
+    Repeat,
     If,
     Else,
     LeftBrace,
@@ -185,6 +187,8 @@ pub fn tokenize(source: &str) -> Result<Vec<Token>, Diagnostic> {
                     }
 
                     match name.as_str() {
+                        "iken" => TokenKind::While,
+                        "tekrarla" => TokenKind::Repeat,
                         "eger" => TokenKind::If,
                         "degilse" => TokenKind::Else,
                         "ve" => TokenKind::And,

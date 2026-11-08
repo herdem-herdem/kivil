@@ -1,0 +1,15 @@
+# Koşullar ve iç içe döngüler
+puan = 70
+eger (puan >= 50 ve puan <= 100) {
+    yaz("Geçtin")
+} degilse {
+    yaz("Tekrar dene")
+}
+sayac = 0
+iken sayac < 3 {
+    yaz("Sayaç:", sayac)
+    sayac = sayac + 1
+}
+tekrarla 2 {
+    yaz("Kıvıl!")
+}

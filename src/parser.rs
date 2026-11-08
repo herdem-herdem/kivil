@@ -21,6 +21,14 @@ pub enum Expr {
 #[derive(Debug, PartialEq)]
 pub enum Statement {
     Located(Box<Statement>, Position),
+    While {
+        condition: Expr,
+        body: Vec<Statement>,
+    },
+    Repeat {
+        count: Expr,
+        body: Vec<Statement>,
+    },
     If {
         condition: Expr,
         then_body: Vec<Statement>,
@@ -116,6 +124,18 @@ impl Parser<'_> {
     }
 
     fn statement_value(&mut self) -> Result<Statement, Diagnostic> {
+        if self.peek() == Some(&TokenKind::While) {
+            self.current += 1;
+            let condition = self.expression()?;
+            let body = self.block()?;
+            return Ok(Statement::While { condition, body });
+        }
+        if self.peek() == Some(&TokenKind::Repeat) {
+            self.current += 1;
+            let count = self.expression()?;
+            let body = self.block()?;
+            return Ok(Statement::Repeat { count, body });
+        }
         if self.peek() == Some(&TokenKind::If) {
             self.current += 1;
             if self.peek() != Some(&TokenKind::LeftParen) {

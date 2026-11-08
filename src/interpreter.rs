@@ -60,6 +60,31 @@ impl<W: Write> Interpreter<W> {
             Statement::Located(statement, position) => {
                 self.execute(statement).map_err(|error| error.at(*position))
             }
+            Statement::While { condition, body } => {
+                loop {
+                    match self.evaluate(condition)? {
+                        Value::Boolean(true) => self.execute_block(body)?,
+                        Value::Boolean(false) => break,
+                        _ => return Err("Döngü koşulu mantıksal bir değer olmalı.".into()),
+                    }
+                }
+                Ok(())
+            }
+            Statement::Repeat { count, body } => {
+                let Value::Number(count) = self.evaluate(count)? else {
+                    return Err("Tekrar sayısı negatif olmayan bir tam sayı olmalı.".into());
+                };
+                if count < 0.0 || count.fract() != 0.0 || count >= usize::MAX as f64 {
+                    return Err(
+                        "Tekrar sayısı desteklenen aralıkta negatif olmayan bir tam sayı olmalı."
+                            .into(),
+                    );
+                }
+                for _ in 0..count as usize {
+                    self.execute_block(body)?;
+                }
+                Ok(())
+            }
             Statement::If {
                 condition,
                 then_body,
@@ -284,6 +309,19 @@ mod tests {
             "eger (dogru) { yaz(1)",
             "degilse {}",
             "}",
+        ] {
+            assert!(calculate(source).is_err(), "{source}");
+        }
+    }
+    #[test]
+    fn loops_update_state_and_evaluate_repeat_count_once() {
+        assert_eq!(calculate("sayac = 0\niken sayac < 3 {\nyaz(sayac)\nsayac = sayac + 1\n}\ntekrarla sayac { sayac = sayac + 1 }\nsayac\niken yanlis { eksik }\ntekrarla 0 { 1 / 0 }\ntekrarla 2 {\ntekrarla 2 { yaz(\"x\") }\n}").unwrap(), "0\n1\n2\n6\nx\nx\nx\nx\n");
+        for source in [
+            "iken 1 {}",
+            "tekrarla -1 {}",
+            "tekrarla 1.5 {}",
+            "tekrarla dogru {}",
+            "iken dogru { 1 / 0 }",
         ] {
             assert!(calculate(source).is_err(), "{source}");
         }
