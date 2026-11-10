@@ -9,6 +9,10 @@ pub enum Expr {
     Not(Box<Expr>),
     Text(String),
     Variable(String),
+    Call {
+        name: String,
+        arguments: Vec<Expr>,
+    },
     Positive(Box<Expr>),
     Negate(Box<Expr>),
     Binary {
@@ -410,7 +414,27 @@ impl Parser<'_> {
             Some(TokenKind::Identifier(name)) => {
                 let name = name.clone();
                 self.current += 1;
-                Ok(Expr::Variable(name))
+                if self.peek() == Some(&TokenKind::LeftParen) {
+                    self.current += 1;
+                    let mut arguments = Vec::new();
+                    if self.peek() != Some(&TokenKind::RightParen) {
+                        loop {
+                            arguments.push(self.expression()?);
+                            if self.peek() != Some(&TokenKind::Comma) {
+                                break;
+                            }
+                            self.current += 1;
+                        }
+                    }
+                    if self.peek() != Some(&TokenKind::RightParen) {
+                        return Err(Diagnostic::from("Çağrıda ',' veya ')' bekleniyor.")
+                            .at(self.position()));
+                    }
+                    self.current += 1;
+                    Ok(Expr::Call { name, arguments })
+                } else {
+                    Ok(Expr::Variable(name))
+                }
             }
             Some(TokenKind::Integer(value)) => {
                 let value = *value as f64;
@@ -535,7 +559,6 @@ mod tests {
             "yaz(,1)",
             "yaz(1",
             "yaz(1\n2)",
-            "sonuc = yaz(1)",
         ] {
             assert!(
                 parse(&tokenize(source).unwrap()).is_err(),

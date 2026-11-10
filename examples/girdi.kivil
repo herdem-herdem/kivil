@@ -1,0 +1,5 @@
+isim = girdi("Adın: ")
+yas = sayi(girdi("Yaşın: "))
+yaz("Merhaba", isim)
+yaz("Gelecek yıl:", yas + 1)
+yaz("Sayının metni: " + metin(yas))

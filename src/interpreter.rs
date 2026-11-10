@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::fmt;
-use std::io::{self, Write};
+use std::io::{self, BufRead, BufReader, Write};
 
 use crate::diagnostic::Diagnostic;
 use crate::parser::{Expr, Operator, Statement};
@@ -24,7 +24,8 @@ impl fmt::Display for Value {
     }
 }
 
-pub struct Interpreter<W: Write = io::Stdout> {
+pub struct Interpreter<R: BufRead = BufReader<io::Stdin>, W: Write = io::Stdout> {
+    input: R,
     variables: HashMap<String, Value>,
     output: W,
 }
@@ -35,9 +36,16 @@ impl Default for Interpreter {
     }
 }
 
-impl<W: Write> Interpreter<W> {
+impl<W: Write> Interpreter<BufReader<io::Stdin>, W> {
     pub fn with_output(output: W) -> Self {
+        Self::with_io(BufReader::new(io::stdin()), output)
+    }
+}
+
+impl<R: BufRead, W: Write> Interpreter<R, W> {
+    pub fn with_io(input: R, output: W) -> Self {
         Self {
+            input,
             variables: HashMap::new(),
             output,
         }
@@ -113,12 +121,69 @@ impl<W: Write> Interpreter<W> {
         }
     }
 
-    fn evaluate(&self, expression: &Expr) -> Result<Value, Diagnostic> {
+    fn call_builtin(&mut self, name: &str, arguments: Vec<Value>) -> Result<Value, Diagnostic> {
+        match name {
+            "girdi" => {
+                let prompt = match arguments.as_slice() {
+                    [] => "",
+                    [Value::Text(prompt)] => prompt.as_str(),
+                    _ => return Err("girdi sıfır veya bir metin argümanı bekliyor.".into()),
+                };
+                write!(self.output, "{prompt}")
+                    .and_then(|_| self.output.flush())
+                    .map_err(|error| Diagnostic::from(format!("Soru yazılamadı: {error}")))?;
+                let mut line = String::new();
+                if self
+                    .input
+                    .read_line(&mut line)
+                    .map_err(|error| Diagnostic::from(format!("Girdi okunamadı: {error}")))?
+                    == 0
+                {
+                    return Err("Girdi beklenirken giriş sona erdi.".into());
+                }
+                if line.ends_with('\n') {
+                    line.pop();
+                    if line.ends_with('\r') {
+                        line.pop();
+                    }
+                }
+                Ok(Value::Text(line))
+            }
+            "sayi" => {
+                let value = match arguments.as_slice() {
+                    [Value::Number(value)] => *value,
+                    [Value::Text(text)] => text
+                        .trim()
+                        .parse::<f64>()
+                        .map_err(|_| Diagnostic::from("Metin sayıya dönüştürülemedi."))?,
+                    _ => return Err("sayi bir sayı veya metin argümanı bekliyor.".into()),
+                };
+                if !value.is_finite() {
+                    return Err("Dönüştürülen sayı desteklenen aralığın dışında.".into());
+                }
+                Ok(Value::Number(value))
+            }
+            "metin" => match arguments.as_slice() {
+                [value] => Ok(Value::Text(value.to_string())),
+                _ => Err("metin bir argüman bekliyor.".into()),
+            },
+            _ => Err(format!("Tanımlanmamış işlev: {name}").into()),
+        }
+    }
+
+    fn evaluate(&mut self, expression: &Expr) -> Result<Value, Diagnostic> {
         let result = match expression {
             Expr::Located(expression, position) => {
                 return self
                     .evaluate(expression)
                     .map_err(|error| error.at(*position));
+            }
+            Expr::Call { name, arguments } => {
+                let mut values = Vec::new();
+                for argument in arguments {
+                    values.push(self.evaluate(argument)?);
+                }
+                self.call_builtin(name, values)?
             }
             Expr::Number(value) => Value::Number(*value),
             Expr::Boolean(value) => Value::Boolean(*value),
@@ -325,5 +390,32 @@ mod tests {
         ] {
             assert!(calculate(source).is_err(), "{source}");
         }
+    }
+    #[test]
+    fn reads_input_and_converts_values() {
+        let source = "isim = girdi(\"Adın: \")\nyas = sayi(girdi(\"Yaşın: \") )\nyaz(isim, yas + 1, metin(dogru))";
+        let statements = parse(&tokenize(source).unwrap()).unwrap();
+        let mut interpreter =
+            Interpreter::with_io(std::io::Cursor::new(" Herdem \r\n18\n"), Vec::new());
+        interpreter.execute_block(&statements).unwrap();
+        assert_eq!(
+            String::from_utf8(interpreter.output).unwrap(),
+            "Adın: Yaşın:  Herdem  19 dogru\n"
+        );
+        for source in [
+            "sayi(\"abc\")",
+            "sayi(\"NaN\")",
+            "sayi(\"inf\")",
+            "sayi(dogru)",
+            "sayi()",
+            "metin()",
+            "girdi(1)",
+            "girdi(\"a\", \"b\")",
+        ] {
+            assert!(calculate(source).is_err(), "{source}");
+        }
+        let statements = parse(&tokenize("girdi()").unwrap()).unwrap();
+        let mut interpreter = Interpreter::with_io(std::io::Cursor::new(""), Vec::new());
+        assert!(interpreter.execute_block(&statements).is_err());
     }
 }
