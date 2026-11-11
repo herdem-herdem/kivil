@@ -8,6 +8,7 @@ use crate::parser::{Expr, Operator, Statement};
 #[derive(Debug, PartialEq, Clone)]
 pub enum Value {
     Number(f64),
+    Null,
     Boolean(bool),
     Text(String),
 }
@@ -15,6 +16,7 @@ pub enum Value {
 impl fmt::Display for Value {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Value::Null => write!(formatter, "bos"),
             Value::Boolean(value) => {
                 write!(formatter, "{}", if *value { "dogru" } else { "yanlis" })
             }
@@ -24,10 +26,23 @@ impl fmt::Display for Value {
     }
 }
 
+#[derive(Clone)]
+struct Function {
+    parameters: Vec<String>,
+    body: Vec<Statement>,
+}
+
+enum Flow {
+    Continue,
+    Return(Value),
+}
+
 pub struct Interpreter<R: BufRead = BufReader<io::Stdin>, W: Write = io::Stdout> {
     input: R,
-    variables: HashMap<String, Value>,
     output: W,
+    variables: HashMap<String, Value>,
+    locals: Vec<HashMap<String, Value>>,
+    functions: HashMap<String, Function>,
 }
 
 impl Default for Interpreter {
@@ -46,8 +61,10 @@ impl<R: BufRead, W: Write> Interpreter<R, W> {
     pub fn with_io(input: R, output: W) -> Self {
         Self {
             input,
-            variables: HashMap::new(),
             output,
+            variables: HashMap::new(),
+            locals: Vec::new(),
+            functions: HashMap::new(),
         }
     }
 
@@ -56,28 +73,82 @@ impl<R: BufRead, W: Write> Interpreter<R, W> {
             .map_err(|error| Diagnostic::from(format!("Çıktı yazılamadı: {error}")))
     }
 
-    fn execute_block(&mut self, statements: &[Statement]) -> Result<(), Diagnostic> {
-        for statement in statements {
-            self.execute(statement)?;
+    pub fn execute(&mut self, statement: &Statement) -> Result<(), Diagnostic> {
+        match self.execute_statement(statement)? {
+            Flow::Continue => Ok(()),
+            Flow::Return(_) => Err("dondur bir işlev içinde kullanılmalı.".into()),
         }
-        Ok(())
     }
 
-    pub fn execute(&mut self, statement: &Statement) -> Result<(), Diagnostic> {
+    fn execute_block(&mut self, statements: &[Statement]) -> Result<Flow, Diagnostic> {
+        for statement in statements {
+            if let Flow::Return(value) = self.execute_statement(statement)? {
+                return Ok(Flow::Return(value));
+            }
+        }
+        Ok(Flow::Continue)
+    }
+
+    fn execute_statement(&mut self, statement: &Statement) -> Result<Flow, Diagnostic> {
         match statement {
             Statement::Located(statement, position) => {
-                self.execute(statement).map_err(|error| error.at(*position))
+                return self
+                    .execute_statement(statement)
+                    .map_err(|error| error.at(*position));
             }
-            Statement::While { condition, body } => {
-                loop {
-                    match self.evaluate(condition)? {
-                        Value::Boolean(true) => self.execute_block(body)?,
-                        Value::Boolean(false) => break,
-                        _ => return Err("Döngü koşulu mantıksal bir değer olmalı.".into()),
-                    }
+            Statement::Function {
+                name,
+                parameters,
+                body,
+            } => {
+                if matches!(name.as_str(), "yaz" | "girdi" | "sayi" | "metin") {
+                    return Err("Yerleşik işlev yeniden tanımlanamaz.".into());
                 }
-                Ok(())
+                self.functions.insert(
+                    name.clone(),
+                    Function {
+                        parameters: parameters.clone(),
+                        body: body.clone(),
+                    },
+                );
             }
+            Statement::Return(expression) => return Ok(Flow::Return(self.evaluate(expression)?)),
+            Statement::Assignment { name, value } => {
+                let value = self.evaluate(value)?;
+                if let Some(scope) = self.locals.last_mut() {
+                    scope.insert(name.clone(), value);
+                } else {
+                    self.variables.insert(name.clone(), value);
+                }
+            }
+            Statement::Expression(expression) => {
+                let value = self.evaluate(expression)?;
+                if self.locals.is_empty() && !matches!(value, Value::Null) {
+                    self.emit(value)?;
+                }
+            }
+            Statement::If {
+                condition,
+                then_body,
+                else_body,
+            } => {
+                return match self.evaluate(condition)? {
+                    Value::Boolean(true) => self.execute_block(then_body),
+                    Value::Boolean(false) => self.execute_block(else_body),
+                    _ => Err("Koşul mantıksal bir değer olmalı.".into()),
+                };
+            }
+            Statement::While { condition, body } => loop {
+                match self.evaluate(condition)? {
+                    Value::Boolean(true) => {
+                        if let Flow::Return(value) = self.execute_block(body)? {
+                            return Ok(Flow::Return(value));
+                        }
+                    }
+                    Value::Boolean(false) => break,
+                    _ => return Err("Döngü koşulu mantıksal bir değer olmalı.".into()),
+                }
+            },
             Statement::Repeat { count, body } => {
                 let Value::Number(count) = self.evaluate(count)? else {
                     return Err("Tekrar sayısı negatif olmayan bir tam sayı olmalı.".into());
@@ -89,40 +160,47 @@ impl<R: BufRead, W: Write> Interpreter<R, W> {
                     );
                 }
                 for _ in 0..count as usize {
-                    self.execute_block(body)?;
+                    if let Flow::Return(value) = self.execute_block(body)? {
+                        return Ok(Flow::Return(value));
+                    }
                 }
-                Ok(())
-            }
-            Statement::If {
-                condition,
-                then_body,
-                else_body,
-            } => match self.evaluate(condition)? {
-                Value::Boolean(true) => self.execute_block(then_body),
-                Value::Boolean(false) => self.execute_block(else_body),
-                _ => Err("Koşul mantıksal bir değer olmalı.".into()),
-            },
-            Statement::Assignment { name, value } => {
-                let value = self.evaluate(value)?;
-                self.variables.insert(name.clone(), value);
-                Ok(())
-            }
-            Statement::Print(arguments) => {
-                let mut parts = Vec::new();
-                for argument in arguments {
-                    parts.push(self.evaluate(argument)?.to_string());
-                }
-                self.emit(parts.join(" "))
-            }
-            Statement::Expression(expression) => {
-                let value = self.evaluate(expression)?;
-                self.emit(value)
             }
         }
+        Ok(Flow::Continue)
+    }
+
+    fn call(&mut self, name: &str, arguments: Vec<Value>) -> Result<Value, Diagnostic> {
+        if let Some(function) = self.functions.get(name).cloned() {
+            if arguments.len() != function.parameters.len() {
+                return Err(format!(
+                    "{name}: {} argüman bekleniyor, {} verildi.",
+                    function.parameters.len(),
+                    arguments.len()
+                )
+                .into());
+            }
+            if self.locals.len() >= 64 {
+                return Err("İşlev çağrı derinliği sınırı aşıldı (64).".into());
+            }
+            let scope = function.parameters.into_iter().zip(arguments).collect();
+            self.locals.push(scope);
+            let result = self.execute_block(&function.body);
+            self.locals.pop();
+            return match result? {
+                Flow::Return(value) => Ok(value),
+                Flow::Continue => Ok(Value::Null),
+            };
+        }
+        self.call_builtin(name, arguments)
     }
 
     fn call_builtin(&mut self, name: &str, arguments: Vec<Value>) -> Result<Value, Diagnostic> {
         match name {
+            "yaz" => {
+                let parts: Vec<String> = arguments.iter().map(ToString::to_string).collect();
+                self.emit(parts.join(" "))?;
+                Ok(Value::Null)
+            }
             "girdi" => {
                 let prompt = match arguments.as_slice() {
                     [] => "",
@@ -183,14 +261,17 @@ impl<R: BufRead, W: Write> Interpreter<R, W> {
                 for argument in arguments {
                     values.push(self.evaluate(argument)?);
                 }
-                self.call_builtin(name, values)?
+                self.call(name, values)?
             }
+            Expr::Null => Value::Null,
             Expr::Number(value) => Value::Number(*value),
             Expr::Boolean(value) => Value::Boolean(*value),
             Expr::Text(text) => Value::Text(text.clone()),
             Expr::Variable(name) => self
-                .variables
-                .get(name)
+                .locals
+                .last()
+                .and_then(|scope| scope.get(name))
+                .or_else(|| self.variables.get(name))
                 .cloned()
                 .ok_or_else(|| format!("Tanımlanmamış değişken: {name}"))?,
             Expr::Not(operand) => match self.evaluate(operand)? {
@@ -417,5 +498,68 @@ mod tests {
         let statements = parse(&tokenize("girdi()").unwrap()).unwrap();
         let mut interpreter = Interpreter::with_io(std::io::Cursor::new(""), Vec::new());
         assert!(interpreter.execute_block(&statements).is_err());
+    }
+    #[test]
+    fn functions_return_values_recurse_and_stop_nested_control_flow() {
+        let source = r#"
+islev faktoriyel(n) {
+    eger (n <= 1) { dondur 1 }
+    dondur n * faktoriyel(n - 1)
+}
+islev ilk() {
+    tekrarla 3 {
+        iken dogru { dondur 7 }
+    }
+    dondur 99
+}
+islev selam(isim) { yaz("Merhaba", isim) }
+yaz(faktoriyel(6), ilk())
+sonuc = selam("Herdem")
+yaz(sonuc == bos)
+islev bitir() { dondur }
+yaz(bitir())
+"#;
+        assert_eq!(
+            calculate(source).unwrap(),
+            "720 7\nMerhaba Herdem\ndogru\nbos\n"
+        );
+    }
+
+    #[test]
+    fn function_scopes_do_not_leak_or_read_caller_locals() {
+        let source = r#"
+x = 10
+islev oku() { dondur x }
+islev cagir(x) {
+    yerel = 99
+    dondur oku() + x
+}
+yaz(cagir(20), x)
+"#;
+        assert_eq!(calculate(source).unwrap(), "30 10\n");
+        assert!(calculate(&format!("{source}\nyerel")).is_err());
+        let source = "islev hata() { dondur 1 / 0 }\nhata()";
+        let statements = parse(&tokenize(source).unwrap()).unwrap();
+        let mut interpreter = Interpreter::with_output(Vec::new());
+        interpreter.execute(&statements[0]).unwrap();
+        assert!(interpreter.execute(&statements[1]).is_err());
+        assert!(interpreter.locals.is_empty());
+    }
+
+    #[test]
+    fn validates_function_definitions_calls_and_return_context() {
+        for source in [
+            "dondur 1",
+            "islev f(a, a) {}",
+            "islev f(a,) {}",
+            "islev f() { islev g() {} }",
+            "islev yaz() {}",
+            "islev f(a) { dondur a }\nf()",
+            "islev f() {}\nf(1)",
+            "bilinmeyen()",
+            "islev f() { dondur f() }\nf()",
+        ] {
+            assert!(calculate(source).is_err(), "{source}");
+        }
     }
 }

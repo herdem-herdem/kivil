@@ -1,10 +1,11 @@
 use crate::diagnostic::{Diagnostic, Position};
 use crate::lexer::{Token, TokenKind};
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum Expr {
     Located(Box<Expr>, Position),
     Number(f64),
+    Null,
     Boolean(bool),
     Not(Box<Expr>),
     Text(String),
@@ -22,7 +23,7 @@ pub enum Expr {
     },
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum Statement {
     Located(Box<Statement>, Position),
     While {
@@ -42,11 +43,16 @@ pub enum Statement {
         name: String,
         value: Expr,
     },
-    Print(Vec<Expr>),
+    Function {
+        name: String,
+        parameters: Vec<String>,
+        body: Vec<Statement>,
+    },
+    Return(Expr),
     Expression(Expr),
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum Operator {
     And,
     Or,
@@ -63,13 +69,18 @@ pub enum Operator {
 }
 
 pub fn parse(tokens: &[Token]) -> Result<Vec<Statement>, Diagnostic> {
-    let mut parser = Parser { tokens, current: 0 };
+    let mut parser = Parser {
+        tokens,
+        current: 0,
+        function_depth: 0,
+    };
     parser.sequence(false)
 }
 
 struct Parser<'a> {
     tokens: &'a [Token],
     current: usize,
+    function_depth: usize,
 }
 
 impl Parser<'_> {
@@ -128,6 +139,66 @@ impl Parser<'_> {
     }
 
     fn statement_value(&mut self) -> Result<Statement, Diagnostic> {
+        if self.peek() == Some(&TokenKind::Function) {
+            if self.function_depth > 0 {
+                return Err("İç içe işlev tanımları henüz desteklenmiyor.".into());
+            }
+            self.current += 1;
+            let Some(TokenKind::Identifier(name)) = self.peek() else {
+                return Err("İşlev adı bekleniyor.".into());
+            };
+            let name = name.clone();
+            self.current += 1;
+            if self.peek() != Some(&TokenKind::LeftParen) {
+                return Err("Parametreler için '(' bekleniyor.".into());
+            }
+            self.current += 1;
+            let mut parameters = Vec::new();
+            if self.peek() != Some(&TokenKind::RightParen) {
+                loop {
+                    let Some(TokenKind::Identifier(parameter)) = self.peek() else {
+                        return Err("Parametre adı bekleniyor.".into());
+                    };
+                    if parameters.contains(parameter) {
+                        return Err(format!("Tekrarlanan parametre: {parameter}").into());
+                    }
+                    parameters.push(parameter.clone());
+                    self.current += 1;
+                    if self.peek() != Some(&TokenKind::Comma) {
+                        break;
+                    }
+                    self.current += 1;
+                }
+            }
+            if self.peek() != Some(&TokenKind::RightParen) {
+                return Err("Parametrelerden sonra ')' bekleniyor.".into());
+            }
+            self.current += 1;
+            self.function_depth += 1;
+            let body = self.block();
+            self.function_depth -= 1;
+            return Ok(Statement::Function {
+                name,
+                parameters,
+                body: body?,
+            });
+        }
+        if self.peek() == Some(&TokenKind::Return) {
+            if self.function_depth == 0 {
+                return Err("dondur yalnızca bir işlev içinde kullanılabilir.".into());
+            }
+            self.current += 1;
+            let value = if matches!(
+                self.peek(),
+                Some(TokenKind::Newline | TokenKind::RightBrace | TokenKind::Eof)
+            ) {
+                Expr::Null
+            } else {
+                self.expression()?
+            };
+            return Ok(Statement::Return(value));
+        }
+
         if self.peek() == Some(&TokenKind::While) {
             self.current += 1;
             let condition = self.expression()?;
@@ -176,31 +247,6 @@ impl Parser<'_> {
                 then_body,
                 else_body,
             });
-        }
-
-        if let Some(TokenKind::Identifier(name)) = self.peek()
-            && name == "yaz"
-            && self.tokens.get(self.current + 1).map(|token| &token.kind)
-                == Some(&TokenKind::LeftParen)
-        {
-            self.current += 2;
-            let mut arguments = Vec::new();
-
-            if self.peek() != Some(&TokenKind::RightParen) {
-                loop {
-                    arguments.push(self.expression()?);
-                    if self.peek() != Some(&TokenKind::Comma) {
-                        break;
-                    }
-                    self.current += 1;
-                }
-            }
-
-            if self.peek() != Some(&TokenKind::RightParen) {
-                return Err("yaz çağrısında ',' veya ')' bekleniyor.".into());
-            }
-            self.current += 1;
-            return Ok(Statement::Print(arguments));
         }
 
         if let Some(TokenKind::Identifier(name)) = self.peek()
@@ -398,6 +444,10 @@ impl Parser<'_> {
 
     fn primary_value(&mut self) -> Result<Expr, Diagnostic> {
         match self.peek() {
+            Some(TokenKind::Null) => {
+                self.current += 1;
+                Ok(Expr::Null)
+            }
             Some(TokenKind::True) => {
                 self.current += 1;
                 Ok(Expr::Boolean(true))
@@ -476,6 +526,10 @@ mod tests {
     fn strip(expression: Expr) -> Expr {
         match expression {
             Expr::Located(inner, _) => strip(*inner),
+            Expr::Call { name, arguments } => Expr::Call {
+                name,
+                arguments: arguments.into_iter().map(strip).collect(),
+            },
             Expr::Binary {
                 left,
                 operator,
@@ -497,7 +551,6 @@ mod tests {
                 name,
                 value: strip(value),
             },
-            Statement::Print(args) => Statement::Print(args.into_iter().map(strip).collect()),
             Statement::Expression(expr) => Statement::Expression(strip(expr)),
             other => other,
         }
@@ -590,11 +643,14 @@ mod tests {
                     name: "isim".into(),
                     value: Expr::Text("Herdem".into()),
                 },
-                Statement::Print(vec![
-                    Expr::Text("Merhaba".into()),
-                    Expr::Variable("isim".into())
-                ]),
-                Statement::Print(vec![]),
+                Statement::Expression(Expr::Call {
+                    name: "yaz".into(),
+                    arguments: vec![Expr::Text("Merhaba".into()), Expr::Variable("isim".into())]
+                }),
+                Statement::Expression(Expr::Call {
+                    name: "yaz".into(),
+                    arguments: vec![]
+                }),
             ])
         );
     }
