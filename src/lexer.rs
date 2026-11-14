@@ -3,6 +3,9 @@ use crate::diagnostic::{Diagnostic, Position};
 #[derive(Debug, PartialEq)]
 pub enum TokenKind {
     Eof,
+    LeftBracket,
+    RightBracket,
+    Dot,
     Function,
     Return,
     Null,
@@ -74,6 +77,9 @@ pub fn tokenize(source: &str) -> Result<Vec<Token>, Diagnostic> {
             let token = match ch {
                 ' ' | '\t' | '\r' => unreachable!(),
                 '\n' => TokenKind::Newline,
+                '[' => TokenKind::LeftBracket,
+                ']' => TokenKind::RightBracket,
+                '.' => TokenKind::Dot,
                 '{' => TokenKind::LeftBrace,
                 '}' => TokenKind::RightBrace,
                 '(' => TokenKind::LeftParen,
@@ -315,7 +321,6 @@ mod tests {
             r#""hatalı\q""#,
             "\"ters eğik çizgi\\",
             "1.",
-            "1.2.3",
             "9223372036854775808",
         ] {
             assert!(tokenize(source).is_err(), "Hata bekleniyordu: {source}");

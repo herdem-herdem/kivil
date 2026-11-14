@@ -1,6 +1,8 @@
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fmt;
 use std::io::{self, BufRead, BufReader, Write};
+use std::rc::Rc;
 
 use crate::diagnostic::Diagnostic;
 use crate::parser::{Expr, Operator, Statement};
@@ -9,6 +11,7 @@ use crate::parser::{Expr, Operator, Statement};
 pub enum Value {
     Number(f64),
     Null,
+    List(Rc<RefCell<Vec<Value>>>),
     Boolean(bool),
     Text(String),
 }
@@ -16,6 +19,19 @@ pub enum Value {
 impl fmt::Display for Value {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Value::List(values) => {
+                write!(formatter, "[")?;
+                for (index, value) in values.borrow().iter().enumerate() {
+                    if index > 0 {
+                        write!(formatter, ", ")?;
+                    }
+                    match value {
+                        Value::Text(text) => write!(formatter, "{text:?}")?,
+                        other => write!(formatter, "{other}")?,
+                    }
+                }
+                write!(formatter, "]")
+            }
             Value::Null => write!(formatter, "bos"),
             Value::Boolean(value) => {
                 write!(formatter, "{}", if *value { "dogru" } else { "yanlis" })
@@ -112,6 +128,22 @@ impl<R: BufRead, W: Write> Interpreter<R, W> {
                     },
                 );
             }
+            Statement::SetIndex {
+                object,
+                index,
+                value,
+            } => {
+                let Value::List(list) = self.evaluate(object)? else {
+                    return Err("İndeks ataması bir liste gerektiriyor.".into());
+                };
+                let index_value = self.evaluate(index)?;
+                let index = Self::list_index(index_value, list.borrow().len())?;
+                let value = self.evaluate(value)?;
+                if Self::contains_list(&value, &list) {
+                    return Err("Döngüsel liste oluşturulamaz.".into());
+                }
+                list.borrow_mut()[index] = value;
+            }
             Statement::Return(expression) => return Ok(Flow::Return(self.evaluate(expression)?)),
             Statement::Assignment { name, value } => {
                 let value = self.evaluate(value)?;
@@ -167,6 +199,56 @@ impl<R: BufRead, W: Write> Interpreter<R, W> {
             }
         }
         Ok(Flow::Continue)
+    }
+
+    fn list_index(value: Value, length: usize) -> Result<usize, Diagnostic> {
+        let Value::Number(index) = value else {
+            return Err("Liste indeksi bir tam sayı olmalı.".into());
+        };
+        if index < 0.0 || index.fract() != 0.0 || index >= length as f64 {
+            return Err(format!(
+                "Liste indeksi sınır dışında veya tam sayı değil: {index} (uzunluk: {length})."
+            )
+            .into());
+        }
+        Ok(index as usize)
+    }
+
+    fn contains_list(value: &Value, target: &Rc<RefCell<Vec<Value>>>) -> bool {
+        match value {
+            Value::List(list) => {
+                Rc::ptr_eq(list, target)
+                    || list
+                        .borrow()
+                        .iter()
+                        .any(|value| Self::contains_list(value, target))
+            }
+            _ => false,
+        }
+    }
+
+    fn call_method(
+        &mut self,
+        object: Value,
+        name: &str,
+        arguments: Vec<Value>,
+    ) -> Result<Value, Diagnostic> {
+        let Value::List(list) = object else {
+            return Err("Bu metot bir liste gerektiriyor.".into());
+        };
+        match (name, arguments.as_slice()) {
+            ("uzunluk", []) => Ok(Value::Number(list.borrow().len() as f64)),
+            ("ekle", [value]) => {
+                if Self::contains_list(value, &list) {
+                    return Err("Döngüsel liste oluşturulamaz.".into());
+                }
+                list.borrow_mut().push(value.clone());
+                Ok(Value::Null)
+            }
+            ("uzunluk", _) => Err("uzunluk argüman almaz.".into()),
+            ("ekle", _) => Err("ekle bir argüman bekliyor.".into()),
+            _ => Err(format!("Tanımlanmamış liste metodu: {name}").into()),
+        }
     }
 
     fn call(&mut self, name: &str, arguments: Vec<Value>) -> Result<Value, Diagnostic> {
@@ -255,6 +337,33 @@ impl<R: BufRead, W: Write> Interpreter<R, W> {
                 return self
                     .evaluate(expression)
                     .map_err(|error| error.at(*position));
+            }
+            Expr::List(elements) => {
+                let mut values = Vec::new();
+                for element in elements {
+                    values.push(self.evaluate(element)?);
+                }
+                Value::List(Rc::new(RefCell::new(values)))
+            }
+            Expr::Index { object, index } => {
+                let Value::List(list) = self.evaluate(object)? else {
+                    return Err("İndeks erişimi bir liste gerektiriyor.".into());
+                };
+                let index_value = self.evaluate(index)?;
+                let index = Self::list_index(index_value, list.borrow().len())?;
+                list.borrow()[index].clone()
+            }
+            Expr::Method {
+                object,
+                name,
+                arguments,
+            } => {
+                let object = self.evaluate(object)?;
+                let mut values = Vec::new();
+                for argument in arguments {
+                    values.push(self.evaluate(argument)?);
+                }
+                self.call_method(object, name, values)?
             }
             Expr::Call { name, arguments } => {
                 let mut values = Vec::new();
@@ -561,5 +670,111 @@ yaz(cagir(20), x)
         ] {
             assert!(calculate(source).is_err(), "{source}");
         }
+    }
+    #[test]
+    fn lists_support_indexing_mutation_methods_and_shared_arguments() {
+        let source = r#"
+sayilar = [10, 20, 30]
+sayilar[1] = 99
+sayilar.ekle(40)
+yaz(sayilar[0], sayilar.uzunluk(), sayilar)
+islev ekle(liste) { liste.ekle(50) }
+ekle(sayilar)
+yaz(sayilar[4])
+icice = [[1, 2], [3]]
+icice[0][1] = 8
+yaz(icice)
+yaz([1, "iki", dogru, bos])
+yaz([1, 2] == [1, 2], [] == [])
+islev liste() { dondur [7, 8] }
+yaz(liste()[1], [].uzunluk())
+kopya = sayilar
+kopya[0] = 77
+yaz(sayilar[0])
+"#;
+        assert_eq!(
+            calculate(source).unwrap(),
+            "10 4 [10, 99, 30, 40]\n50\n[[1, 8], [3]]\n[1, \"iki\", dogru, bos]\ndogru dogru\n8 0\n77\n"
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_indices_methods_and_cycles() {
+        for source in [
+            "[1][-1]",
+            "[1][0.5]",
+            "[1][1]",
+            "[][0]",
+            "[1][dogru]",
+            "1[0]",
+            "a = [1]\na[2] = 3",
+            "a = [1]\na[0] = 1 / 0",
+            "[1].ekle()",
+            "[].uzunluk(1)",
+            "1.uzunluk()",
+            "a = []\na.ekle(a)",
+            "a = [0]\na[0] = a",
+            "a = []\nb = [a]\na.ekle(b)",
+            "a = [0]\nb = [a]\na[0] = b",
+            "[1,]",
+            "[1 2]",
+            "[1",
+            "[1][0",
+            "[1].bilinmeyen()",
+        ] {
+            assert!(calculate(source).is_err(), "{source}");
+        }
+    }
+    #[test]
+    fn input_flushes_the_prompt_before_reading() {
+        use std::cell::Cell;
+        struct CheckedInput {
+            data: std::io::Cursor<Vec<u8>>,
+            flushed: Rc<Cell<bool>>,
+        }
+        impl std::io::Read for CheckedInput {
+            fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
+                self.data.read(bytes)
+            }
+        }
+        impl BufRead for CheckedInput {
+            fn fill_buf(&mut self) -> std::io::Result<&[u8]> {
+                assert!(
+                    self.flushed.get(),
+                    "The prompt must be flushed before reading input"
+                );
+                self.data.fill_buf()
+            }
+            fn consume(&mut self, amount: usize) {
+                self.data.consume(amount);
+            }
+        }
+        struct CheckedOutput {
+            data: Vec<u8>,
+            flushed: Rc<Cell<bool>>,
+        }
+        impl Write for CheckedOutput {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.data.extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                self.flushed.set(true);
+                Ok(())
+            }
+        }
+        let flushed = Rc::new(Cell::new(false));
+        let input = CheckedInput {
+            data: std::io::Cursor::new(b"Herdem\n".to_vec()),
+            flushed: flushed.clone(),
+        };
+        let output = CheckedOutput {
+            data: Vec::new(),
+            flushed,
+        };
+        let mut interpreter = Interpreter::with_io(input, output);
+        let statements = parse(&tokenize("yaz(girdi(\"Adın: \"))").unwrap()).unwrap();
+        interpreter.execute_block(&statements).unwrap();
+        assert_eq!(interpreter.output.data, "Adın: Herdem\n".as_bytes());
     }
 }

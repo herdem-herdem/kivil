@@ -6,6 +6,16 @@ pub enum Expr {
     Located(Box<Expr>, Position),
     Number(f64),
     Null,
+    List(Vec<Expr>),
+    Index {
+        object: Box<Expr>,
+        index: Box<Expr>,
+    },
+    Method {
+        object: Box<Expr>,
+        name: String,
+        arguments: Vec<Expr>,
+    },
     Boolean(bool),
     Not(Box<Expr>),
     Text(String),
@@ -25,6 +35,11 @@ pub enum Expr {
 
 #[derive(Debug, PartialEq, Clone)]
 pub enum Statement {
+    SetIndex {
+        object: Expr,
+        index: Expr,
+        value: Expr,
+    },
     Located(Box<Statement>, Position),
     While {
         condition: Expr,
@@ -258,7 +273,24 @@ impl Parser<'_> {
             return Ok(Statement::Assignment { name, value });
         }
 
-        Ok(Statement::Expression(self.expression()?))
+        let expression = self.expression()?;
+        if self.peek() == Some(&TokenKind::Equal) {
+            let mut target = expression;
+            while let Expr::Located(inner, _) = target {
+                target = *inner;
+            }
+            let Expr::Index { object, index } = target else {
+                return Err("Atamanın sol tarafı bir değişken veya liste elemanı olmalı.".into());
+            };
+            self.current += 1;
+            let value = self.expression()?;
+            return Ok(Statement::SetIndex {
+                object: *object,
+                index: *index,
+                value,
+            });
+        }
+        Ok(Statement::Expression(expression))
     }
 
     fn expression(&mut self) -> Result<Expr, Diagnostic> {
@@ -431,8 +463,73 @@ impl Parser<'_> {
                     position,
                 ))
             }
-            _ => self.primary(),
+            _ => self.postfix(),
         }
+    }
+
+    fn arguments(&mut self, closing: TokenKind) -> Result<Vec<Expr>, Diagnostic> {
+        let mut arguments = Vec::new();
+        if self.peek() != Some(&closing) {
+            loop {
+                arguments.push(self.expression()?);
+                if self.peek() != Some(&TokenKind::Comma) {
+                    break;
+                }
+                self.current += 1;
+            }
+        }
+        if self.peek() != Some(&closing) {
+            return Err(
+                Diagnostic::from(format!("Virgül veya {closing:?} bekleniyor."))
+                    .at(self.position()),
+            );
+        }
+        self.current += 1;
+        Ok(arguments)
+    }
+
+    fn postfix(&mut self) -> Result<Expr, Diagnostic> {
+        let mut object = self.primary()?;
+        loop {
+            let position = self.position();
+            let expression = match self.peek() {
+                Some(TokenKind::LeftBracket) => {
+                    self.current += 1;
+                    let index = self.expression()?;
+                    if self.peek() != Some(&TokenKind::RightBracket) {
+                        return Err(
+                            Diagnostic::from("İndeksten sonra ']' bekleniyor.").at(self.position())
+                        );
+                    }
+                    self.current += 1;
+                    Expr::Index {
+                        object: Box::new(object),
+                        index: Box::new(index),
+                    }
+                }
+                Some(TokenKind::Dot) => {
+                    self.current += 1;
+                    let Some(TokenKind::Identifier(name)) = self.peek() else {
+                        return Err("Metot adı bekleniyor.".into());
+                    };
+                    let name = name.clone();
+                    self.current += 1;
+                    if self.peek() != Some(&TokenKind::LeftParen) {
+                        return Err("Metot çağrısında '(' bekleniyor.".into());
+                    }
+                    self.current += 1;
+                    let arguments = self.arguments(TokenKind::RightParen)?;
+                    Expr::Method {
+                        object: Box::new(object),
+                        name,
+                        arguments,
+                    }
+                }
+                _ => break,
+            };
+            object = Expr::Located(Box::new(expression), position);
+        }
+        Ok(object)
     }
 
     fn primary(&mut self) -> Result<Expr, Diagnostic> {
@@ -444,6 +541,10 @@ impl Parser<'_> {
 
     fn primary_value(&mut self) -> Result<Expr, Diagnostic> {
         match self.peek() {
+            Some(TokenKind::LeftBracket) => {
+                self.current += 1;
+                Ok(Expr::List(self.arguments(TokenKind::RightBracket)?))
+            }
             Some(TokenKind::Null) => {
                 self.current += 1;
                 Ok(Expr::Null)
@@ -466,21 +567,7 @@ impl Parser<'_> {
                 self.current += 1;
                 if self.peek() == Some(&TokenKind::LeftParen) {
                     self.current += 1;
-                    let mut arguments = Vec::new();
-                    if self.peek() != Some(&TokenKind::RightParen) {
-                        loop {
-                            arguments.push(self.expression()?);
-                            if self.peek() != Some(&TokenKind::Comma) {
-                                break;
-                            }
-                            self.current += 1;
-                        }
-                    }
-                    if self.peek() != Some(&TokenKind::RightParen) {
-                        return Err(Diagnostic::from("Çağrıda ',' veya ')' bekleniyor.")
-                            .at(self.position()));
-                    }
-                    self.current += 1;
+                    let arguments = self.arguments(TokenKind::RightParen)?;
                     Ok(Expr::Call { name, arguments })
                 } else {
                     Ok(Expr::Variable(name))
@@ -601,6 +688,7 @@ mod tests {
             "1 2",
             "2(3)",
             "1 + * 2",
+            "1.2.3",
             "puan =",
             "puan =\n10",
             "10 = 20",

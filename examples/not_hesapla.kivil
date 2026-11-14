@@ -1,0 +1,22 @@
+# Girdi, koşullar, döngüler, fonksiyonlar ve listeler birlikte.
+islev ortalama(notlar) {
+    toplam = 0
+    indeks = 0
+    iken indeks < notlar.uzunluk() {
+        toplam = toplam + notlar[indeks]
+        indeks = indeks + 1
+    }
+    dondur toplam / notlar.uzunluk()
+}
+isim = girdi("Adın: ")
+notlar = []
+tekrarla 3 {
+    notlar.ekle(sayi(girdi("Notun: ")))
+}
+sonuc = ortalama(notlar)
+yaz(isim, "ortalaman:", sonuc)
+eger (sonuc >= 50 ve sonuc <= 100) {
+    yaz("Geçtin")
+} degilse {
+    yaz("Tekrar dene")
+}

@@ -39,22 +39,32 @@ fn run(source: &str) -> Result<(), diagnostic::Diagnostic> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn check(source: &str) -> Result<(), diagnostic::Diagnostic> {
+        let tokens = lexer::tokenize(source)?;
+        let statements = parser::parse(&tokens)?;
+        let mut interpreter = interpreter::Interpreter::with_output(Vec::new());
+        for statement in &statements {
+            interpreter.execute(statement)?;
+        }
+        Ok(())
+    }
     use crate::diagnostic::Position;
 
     #[test]
     fn reports_unicode_columns_and_runtime_locations() {
-        let error = run("isim = \"İ\"\n  10 / 0").unwrap_err();
+        let error = check("isim = \"İ\"\n  10 / 0").unwrap_err();
         assert_eq!(error.position, Some(Position { line: 2, column: 6 }));
         let error = lexer::tokenize("öğrenci @").unwrap_err();
         assert_eq!(error.position, Some(Position { line: 1, column: 9 }));
-        let error = run("1 +").unwrap_err();
+        let error = check("1 +").unwrap_err();
         assert_eq!(error.position, Some(Position { line: 1, column: 4 }));
     }
 
     #[test]
     fn comments_preserve_newlines_and_hashes_inside_strings() {
-        assert!(run("# başlık\r\nisim = \"# metin\" # açıklama\r\nyaz(isim) # son").is_ok());
-        let error = run("1\n# açıklama\neksik").unwrap_err();
+        assert!(check("# başlık\r\nisim = \"# metin\" # açıklama\r\nyaz(isim) # son").is_ok());
+        let error = check("1\n# açıklama\neksik").unwrap_err();
         assert_eq!(error.position, Some(Position { line: 3, column: 1 }));
     }
 }

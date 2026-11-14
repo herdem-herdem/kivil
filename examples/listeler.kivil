@@ -1,0 +1,16 @@
+# Listeyi bir işleve vermek aynı listeyi paylaşır.
+islev toplam(liste) {
+    sonuc = 0
+    indeks = 0
+    iken indeks < liste.uzunluk() {
+        sonuc = sonuc + liste[indeks]
+        indeks = indeks + 1
+    }
+    dondur sonuc
+}
+sayilar = [10, 20, 30]
+sayilar[1] = 99
+sayilar.ekle(40)
+yaz("Liste:", sayilar)
+yaz("İlk:", sayilar[0], "Uzunluk:", sayilar.uzunluk())
+yaz("Toplam:", toplam(sayilar))
