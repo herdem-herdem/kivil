@@ -3,9 +3,19 @@
 Rust ile geliştirilen küçük bir Türkçe programlama dili yorumlayıcısı.
 Paket, terminal komutu ve dosya uzantısı için ASCII `kivil` adı kullanılır.
 
+Proje aktif geliştirme aşamasındadır; dilin sözdizimi ve özellikleri değişebilir.
+
 ## Çalıştırma
 
-Rust ve Cargo kurulu olmalıdır. Proje kökünde:
+Rust 2024 edition destekleyen Rust 1.85 veya üzeri ve Cargo kurulu olmalıdır.
+Depoyu indirmek için:
+
+```sh
+git clone https://github.com/herdem-herdem/kivil.git
+cd kivil
+```
+
+Proje kökünde:
 
 ```sh
 cargo run -- examples/merhaba.kivil
@@ -142,3 +152,5 @@ cargo clippy --all-targets -- -D warnings
 `interpreter.rs` değerler, kapsamlar ve çalıştırmayı yönetir.
 `diagnostic.rs` ortak hata ve konum tiplerini içerir.
 Standart kütüphane dışında bağımlılık kullanılmaz.
+GitHub Actions her push ve pull request için biçimlendirme, test, Clippy ve
+release derlemesini kontrol eder.
